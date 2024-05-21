@@ -16,7 +16,6 @@
 
 #include <parthenon/package.hpp>
 
-#include "Kokkos_Macros.hpp"
 #include "basic_types.hpp"
 #include "config.hpp"
 #include "defs.hpp"
@@ -24,6 +23,7 @@
 #include "fieldloop_package.hpp"
 #include "interface/variable_pack.hpp"
 #include "kokkos_abstraction.hpp"
+#include "Kokkos_Macros.hpp"
 #include "parameter_input.hpp"
 #include "utils/error_checking.hpp"
 

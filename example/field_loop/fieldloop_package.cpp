@@ -102,11 +102,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
 
   parthenon::HstVar_list hst_vars = {};
   hst_vars.emplace_back(parthenon::HistoryOutputVar(
-           UserHistoryOperation::sum, FieldLoopHst<Kokkos::Sum<Real, HostExecSpace>>,
-           "total_divergence"));
+      UserHistoryOperation::sum, FieldLoopHst<Kokkos::Sum<Real, HostExecSpace>>,
+      "total_divergence"));
   hst_vars.emplace_back(parthenon::HistoryOutputVar(
-           UserHistoryOperation::max, FieldLoopHst<Kokkos::Max<Real, HostExecSpace>>,
-           "max_divergence"));
+      UserHistoryOperation::max, FieldLoopHst<Kokkos::Max<Real, HostExecSpace>>,
+      "max_divergence"));
 
   pkg->AddParam<>(parthenon::hist_param_key, hst_vars);
 
@@ -478,15 +478,18 @@ TaskStatus StaggeredUpdate(MeshData<Real> *base, MeshData<Real> *in, const Real 
             0.5 * (fout(m, TE::F1, idfB, k, j, i + 1) + fout(m, TE::F1, idfB, k, j, i));
         Bout(m, idB + 1, k, j, i) =
             0.5 * (fout(m, TE::F2, idfB, k, j + 1, i) + fout(m, TE::F2, idfB, k, j, i));
-        
+
         Bout(m, idiv, k, j, i) =
-            1./coords.Dxf<1>() * (fout(m, TE::F1, idfB, k, j, i + 1) - fout(m, TE::F1, idfB, k, j, i)) +
-            1./coords.Dxf<2>() * (fout(m, TE::F2, idfB, k, j + 1, i) - fout(m, TE::F2, idfB, k, j, i));
+            1. / coords.Dxf<1>() *
+                (fout(m, TE::F1, idfB, k, j, i + 1) - fout(m, TE::F1, idfB, k, j, i)) +
+            1. / coords.Dxf<2>() *
+                (fout(m, TE::F2, idfB, k, j + 1, i) - fout(m, TE::F2, idfB, k, j, i));
         if (ndim > 2) {
-           Bout(m, idB + 2, k, j, i) =
-            0.5 * (fout(m, TE::F3, idfB, k + 1, j, i) + fout(m, TE::F3, idfB, k, j, i));
-           Bout(m, idiv, k, j, i) +=
-            1./coords.Dxf<3>() * (fout(m, TE::F3, idfB, k + 1, j, i) - fout(m, TE::F3, idfB, k, j, i));
+          Bout(m, idB + 2, k, j, i) =
+              0.5 * (fout(m, TE::F3, idfB, k + 1, j, i) + fout(m, TE::F3, idfB, k, j, i));
+          Bout(m, idiv, k, j, i) +=
+              1. / coords.Dxf<3>() *
+              (fout(m, TE::F3, idfB, k + 1, j, i) - fout(m, TE::F3, idfB, k, j, i));
         }
       });
 
