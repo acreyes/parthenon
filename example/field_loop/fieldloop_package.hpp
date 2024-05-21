@@ -26,6 +26,8 @@ void FieldLoopGreetings(Mesh *pmesh, ParameterInput *pin, parthenon::SimTime &tm
 void magP(MeshBlockData<Real> *rc);
 Real EstimateTimestepBlock(MeshBlockData<Real> *rc);
 TaskStatus CalculateFluxes(std::shared_ptr<MeshBlockData<Real>> &rc);
+template <typename T>
+Real FieldLoopHst(MeshData<Real> *md);
 
 template <typename T>
 TaskStatus StaggeredUpdate(T *base, T *in, const Real beta, const Real dt, T *out);

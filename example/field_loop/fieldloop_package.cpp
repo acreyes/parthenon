@@ -28,6 +28,7 @@
 #include "defs.hpp"
 #include "fieldloop_package.hpp"
 #include "kokkos_abstraction.hpp"
+#include "outputs/outputs.hpp"
 #include "prolong_restrict/pr_divfree.hpp"
 #include "reconstruct/dc_inline.hpp"
 #include "utils/error_checking.hpp"
@@ -64,10 +65,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   Real vz = pin->GetOrAddReal("fieldloop", "vz", 0.0);
   Real R = pin->GetOrAddReal("fieldloop", "radius", 0.3);
 
-  pkg->AddParam("R", R);
+  pkg->AddParam<>("R", R);
   pkg->AddParam<>("vx", vx);
   pkg->AddParam<>("vy", vy);
   pkg->AddParam<>("vz", vz);
+  pkg->AddParam<>("divergence", 0.);
 
   // Give a custom labels to advected in the data output
   Metadata m;
@@ -98,6 +100,16 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   pkg->EstimateTimestepBlock = EstimateTimestepBlock;
   pkg->UserWorkBeforeLoopMesh = FieldLoopGreetings;
 
+  parthenon::HstVar_list hst_vars = {};
+  hst_vars.emplace_back(parthenon::HistoryOutputVar(
+           UserHistoryOperation::sum, FieldLoopHst<Kokkos::Sum<Real, HostExecSpace>>,
+           "total_divergence"));
+  hst_vars.emplace_back(parthenon::HistoryOutputVar(
+           UserHistoryOperation::max, FieldLoopHst<Kokkos::Max<Real, HostExecSpace>>,
+           "max_divergence"));
+
+  pkg->AddParam<>(parthenon::hist_param_key, hst_vars);
+
   return pkg;
 }
 
@@ -110,6 +122,40 @@ void FieldLoopGreetings(Mesh *pmesh, ParameterInput *pin, parthenon::SimTime &tm
   }
 }
 
+template <typename T>
+Real FieldLoopHst(MeshData<Real> *md) {
+  auto pmb = md->GetBlockData(0)->GetBlockPointer();
+
+  const auto ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+  const auto jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+  const auto kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+
+  // Packing variable over MeshBlock as the function is called for MeshData, i.e., a
+  // collection of blocks
+  const auto &div_pack = md->PackVariables(std::vector<std::string>{"div"});
+
+  Real result = 0.0;
+  T reducer(result);
+
+  // We choose to apply volume weighting when using the sum reduction.
+  // Downstream this choice will be done on a variable by variable basis and volume
+  // weighting needs to be applied in the reduction region.
+  const bool volume_weighting = std::is_same<T, Kokkos::Sum<Real, HostExecSpace>>::value;
+  const int nDim = pmb->pmy_mesh->ndim;
+  parthenon::par_reduce(
+      parthenon::loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(), 0,
+      div_pack.GetDim(5) - 1, kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+      KOKKOS_LAMBDA(const int b, const int k, const int j, const int i, Real &lresult) {
+        const auto &coords = div_pack.GetCoords(b);
+        // `join` is a function of the Kokkos::ReducerConecpt that allows to use the same
+        // call for different reductions
+        const Real vol = volume_weighting ? coords.CellVolume(k, j, i) : 1.0;
+        reducer.join(lresult, Kokkos::abs(div_pack(b, 0, k, j, i)) * vol);
+      },
+      reducer);
+
+  return result;
+}
 // this is the package registered function to fill derived
 void magP(MeshBlockData<Real> *rc) {
   auto pmb = rc->GetBlockPointer();
@@ -360,10 +406,11 @@ TaskStatus StaggeredUpdate(MeshData<Real> *base, MeshData<Real> *in, const Real 
   PackIndexMap cid_base, cid_in, cid_out;
   const auto &Bbase = base->PackVariables(std::vector<std::string>({"B"}), cid_base);
   const auto &Bin = in->PackVariablesAndFluxes(std::vector<std::string>({"B"}), cid_in);
-  auto Bout = out->PackVariables(std::vector<std::string>({"B"}), cid_out);
+  auto Bout = out->PackVariables(std::vector<std::string>({"B", "div"}), cid_out);
 
   const auto idB = cid_out["B"].first;
   const auto idfB = fid_out["faceB"].first;
+  const auto idiv = cid_out["div"].first;
 
   const IndexRange ib = in->GetBoundsI(interior);
   const IndexRange jb = in->GetBoundsJ(interior);
@@ -425,13 +472,22 @@ TaskStatus StaggeredUpdate(MeshData<Real> *base, MeshData<Real> *in, const Real 
       DEFAULT_LOOP_PATTERN, PARTHENON_AUTO_LABEL, DevExecSpace(), 0, fin.GetDim(5) - 1,
       kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        auto &coords = fout.GetCoords(m);
+
         Bout(m, idB, k, j, i) =
             0.5 * (fout(m, TE::F1, idfB, k, j, i + 1) + fout(m, TE::F1, idfB, k, j, i));
         Bout(m, idB + 1, k, j, i) =
             0.5 * (fout(m, TE::F2, idfB, k, j + 1, i) + fout(m, TE::F2, idfB, k, j, i));
-        if (ndim > 2)
-          Bout(m, idB + 2, k, j, i) =
-              0.5 * (fout(m, TE::F3, idfB, k + 1, j, i) + fout(m, TE::F3, idfB, k, j, i));
+        
+        Bout(m, idiv, k, j, i) =
+            1./coords.Dxf<1>() * (fout(m, TE::F1, idfB, k, j, i + 1) - fout(m, TE::F1, idfB, k, j, i)) +
+            1./coords.Dxf<2>() * (fout(m, TE::F2, idfB, k, j + 1, i) - fout(m, TE::F2, idfB, k, j, i));
+        if (ndim > 2) {
+           Bout(m, idB + 2, k, j, i) =
+            0.5 * (fout(m, TE::F3, idfB, k + 1, j, i) + fout(m, TE::F3, idfB, k, j, i));
+           Bout(m, idiv, k, j, i) +=
+            1./coords.Dxf<3>() * (fout(m, TE::F3, idfB, k + 1, j, i) - fout(m, TE::F3, idfB, k, j, i));
+        }
       });
 
   return TaskStatus::complete;

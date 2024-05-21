@@ -23,8 +23,6 @@ int main(int argc, char *argv[]) {
   // Redefine parthenon defaults
   pman.app_input->ProcessPackages = fieldloop_example::ProcessPackages;
   pman.app_input->ProblemGenerator = fieldloop_example::ProblemGenerator;
-  /* pman.app_input->UserWorkAfterLoop = fieldloop_example::UserWorkAfterLoop; */
-  pman.app_input->UserMeshWorkBeforeOutput = fieldloop_example::UserMeshWorkBeforeOutput;
 
   // call ParthenonInit to initialize MPI and Kokkos, parse the input deck, and set up
   auto manager_status = pman.ParthenonInitEnv(argc, argv);
