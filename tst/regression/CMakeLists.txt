@@ -110,6 +110,13 @@ if (ENABLE_HDF5)
     --num_steps 3")
   list(APPEND EXTRA_TEST_LABELS "")
 
+  list(APPEND TEST_DIRS field_loop)
+  list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
+  list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/field_loop/fieldloop-example \
+    --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/field_loop/parthinput.field_loop \
+    --num_steps 2")
+  list(APPEND EXTRA_TEST_LABELS "")
+
   list(APPEND TEST_DIRS poisson)
   list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
   list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/poisson/poisson-example \
