@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 
+#include "coordinates/coordinates.hpp"
 #include "defs.hpp"
 #include "parthenon_arrays.hpp"
 
@@ -44,6 +45,10 @@ AmrTag FirstDerivative(const AMRBounds &bnds, const ParArray3D<Real> &q,
 
 AmrTag SecondDerivative(const AMRBounds &bnds, const ParArray3D<Real> &q,
                         const Real refine_criteria, const Real derefine_criteria);
+
+AmrTag LoehnerEstimator(const AMRBounds &bnds, const Coordinates_t &coords, const ParArray3D<Real> &q,
+                        const ParArray4D<Real> &d1Scratch, const ParArray5D<Real> &d2Scratch,
+                        const Real refine_criteria, const Real derefine_criteria, const Real refine_filter);
 
 } // namespace Refinement
 

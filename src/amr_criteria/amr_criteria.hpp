@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 
+#include "coordinates/coordinates.hpp"
 #include "defs.hpp"
 #include "mesh/domain.hpp"
 
@@ -57,6 +58,14 @@ struct AMRSecondDerivative : public AMRCriteria {
   AmrTag operator()(const MeshBlockData<Real> *rc) const override;
 };
 
+struct AMRLoehnerEstimator : public AMRCriteria {
+  AMRLoehnerEstimator(ParameterInput *pin, std::string &block_name);
+  AmrTag operator()(const MeshBlockData<Real> *rc) const override;
+  Coordinates_t GetCoords(const MeshBlockData<Real> *rc) const;
+  Real refine_filter;
+  ParArray4D<Real> d1Scratch;
+  ParArray5D<Real> d2Scratch;
+};
 } // namespace parthenon
 
 #endif // AMR_CRITERIA_AMR_CRITERIA_HPP_

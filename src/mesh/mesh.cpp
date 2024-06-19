@@ -167,6 +167,7 @@ Mesh::Mesh(ParameterInput *pin, ApplicationInput *app_in, Packages_t &packages,
     } else {
       base_block_size.nx(dir) = mesh_size.nx(dir);
     }
+    pin->SetInteger("parthenon/meshblock", label, base_block_size.nx(dir));
   }
 
   // Load balancing flag and parameters

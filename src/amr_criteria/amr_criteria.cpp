@@ -15,10 +15,13 @@
 #include <memory>
 
 #include "amr_criteria/refinement_package.hpp"
+#include "coordinates/coordinates.hpp"
+#include "globals.hpp"
 #include "interface/meshblock_data.hpp"
 #include "interface/variable.hpp"
 #include "mesh/mesh.hpp"
 #include "parameter_input.hpp"
+#include "utils/error_checking.hpp"
 
 namespace parthenon {
 
@@ -65,6 +68,27 @@ AMRCriteria::AMRCriteria(ParameterInput *pin, std::string &block_name)
   }
 }
 
+AMRLoehnerEstimator::AMRLoehnerEstimator(ParameterInput *pin, std::string &block_name)
+   : AMRCriteria(pin, block_name) {
+      PARTHENON_REQUIRE_THROWS(Globals::nghost > 1, "Loehner estimator needs at least 2 ghost cells")
+      refine_filter = pin->GetOrAddReal(block_name, "refine_filter", 0.01);
+      const int meshx2 = pin->GetInteger("parthenon/mesh", "nx2") > 1 
+                         ? Globals::nghost : 0;
+      const int meshx3 = pin->GetInteger("parthenon/mesh", "nx3") > 1 
+                         ? Globals::nghost : 0;
+
+      const int nx1 = pin->GetInteger("parthenon/meshblock", "nx1") + 2*Globals::nghost;
+      const int nx2 = pin->GetInteger("parthenon/meshblock", "nx2") + 2*meshx2;
+      const int nx3 = pin->GetInteger("parthenon/meshblock", "nx3") + 2*meshx3;
+
+      const int ndim = 1 + (meshx2 > 1) + (meshx3 > 1);
+      // work array for first derivatives
+      d1Scratch = ParArray4D<Real>("d1Scratch", 1 + meshx2 + meshx3, nx3, nx2, nx1);
+      // work array for second derivatives & averaging
+      d2Scratch = ParArray5D<Real>("d2Scratch", 3, ndim*ndim, nx3, nx2, nx1);
+
+   }
+
 std::shared_ptr<AMRCriteria> AMRCriteria::MakeAMRCriteria(std::string &criteria,
                                                           ParameterInput *pin,
                                                           std::string &block_name) {
@@ -72,6 +96,8 @@ std::shared_ptr<AMRCriteria> AMRCriteria::MakeAMRCriteria(std::string &criteria,
     return std::make_shared<AMRFirstDerivative>(pin, block_name);
   if (criteria == "derivative_order_2")
     return std::make_shared<AMRSecondDerivative>(pin, block_name);
+  if (criteria == "loehner")
+    return std::make_shared<AMRLoehnerEstimator>(pin, block_name);
   throw std::invalid_argument("\n  Invalid selection for refinment method in " +
                               block_name + ": " + criteria);
 }
@@ -103,4 +129,19 @@ AmrTag AMRSecondDerivative::operator()(const MeshBlockData<Real> *rc) const {
   return Refinement::SecondDerivative(bnds, q, refine_criteria, derefine_criteria);
 }
 
+Coordinates_t AMRLoehnerEstimator::GetCoords(const MeshBlockData<Real> *rc) const {
+   return rc->GetBlockPointer()->coords;
+}
+
+AmrTag AMRLoehnerEstimator::operator()(const MeshBlockData<Real> *rc) const {
+  if (!rc->HasVariable(field) || !rc->IsAllocated(field)) {
+    return AmrTag::same;
+  }
+  auto bnds = GetBounds(rc);
+  auto coords = GetCoords(rc);
+  auto q = Kokkos::subview(rc->Get(field).data, comp6, comp5, comp4, Kokkos::ALL(),
+                           Kokkos::ALL(), Kokkos::ALL());
+  return Refinement::LoehnerEstimator(bnds, coords, q, d1Scratch, d2Scratch, 
+                                      refine_criteria, derefine_criteria, refine_filter);
+}
 } // namespace parthenon

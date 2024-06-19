@@ -14,18 +14,23 @@
 #include "amr_criteria/refinement_package.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <utility>
 
+#include "Kokkos_Array.hpp"
+#include "Kokkos_Macros.hpp"
 #include "amr_criteria/amr_criteria.hpp"
 #include "interface/mesh_data.hpp"
 #include "interface/meshblock_data.hpp"
 #include "interface/state_descriptor.hpp"
+#include "kokkos_abstraction.hpp"
 #include "mesh/mesh.hpp"
 #include "mesh/mesh_refinement.hpp"
 #include "mesh/meshblock.hpp"
 #include "parameter_input.hpp"
+#include "utils/instrument.hpp"
 
 namespace parthenon {
 namespace Refinement {
@@ -146,6 +151,109 @@ AmrTag SecondDerivative(const AMRBounds &bnds, const ParArray3D<Real> &q,
 
   if (maxd > refine_criteria) return AmrTag::refine;
   if (maxd < derefine_criteria) return AmrTag::derefine;
+  return AmrTag::same;
+}
+
+AmrTag LoehnerEstimator(const AMRBounds &bnds, const Coordinates_t &coords, const ParArray3D<Real> &q,
+                        const ParArray4D<Real> &d1Scratch, const ParArray5D<Real> &d2Scratch,
+                        const Real refine_criteria, const Real derefine_criteria, const Real refine_filter) {
+  PARTHENON_INSTRUMENT
+  const int ndim = 1 + (bnds.je > bnds.js) + (bnds.ke > bnds.ks);
+  const int k3d = ndim > 2 ? 1 : 0;
+  const int k2d = ndim > 1 ? 1 : 0;
+  Kokkos::Array<Real,3> idx = {0.5/coords.Dxc<1>(), 0.5/coords.Dxc<2>(), 0.5/coords.Dxc<3>()};
+
+  // first derivatives
+  par_for(
+     loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
+     0, ndim-1, bnds.ks, bnds.ke, bnds.js, bnds.je, bnds.is, bnds.ie,
+     KOKKOS_LAMBDA(const int dir, const int k, const int j, const int i)
+     {
+      const int ip = dir == 0 ? 1 : 0;
+      const int jp = dir == 1 ? 1 : 0;
+      const int kp = dir == 2 ? 1 : 0;
+      d1Scratch(dir,k,j,i) = (q(k+kp,j+jp,i+ip) - q(k-kp,j-jp,i-ip))*idx[dir];
+     });
+
+  Kokkos::fence();
+  const int is = bnds.is+1  ; const int ie = bnds.ie-1;
+  const int js = bnds.js+k2d; const int je = bnds.je-k2d;
+  const int ks = bnds.ks+k3d; const int ke = bnds.ke-k3d;
+  par_for(
+     loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
+     0, ndim-1, 0, ndim-1, ks, ke, js, je, is, ie,
+     KOKKOS_LAMBDA(const int dir2, const int dir1, const int k, const int j, const int i)
+     {
+      const int ip1 = dir1 == 0 ? 1 : 0;
+      const int jp1 = dir1 == 1 ? 1 : 0;
+      const int kp1 = dir1 == 2 ? 1 : 0;
+      const int ip2 = dir2 == 0 ? 1 : 0;
+      const int jp2 = dir2 == 1 ? 1 : 0;
+      const int kp2 = dir2 == 2 ? 1 : 0;
+
+      const int dir = dir1 + (ndim)*dir2;
+
+      d2Scratch(0,dir,k,j,i) = ( d1Scratch(dir1,k+kp2,j+jp2,i+ip2) 
+                                 - d1Scratch(dir1,k-kp2,j-jp2,i-ip2) )*idx[dir2];
+      });
+
+  par_for(
+     loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
+     0, ndim-1, 0, ndim-1, ks, ke, js, je, is, ie,
+     KOKKOS_LAMBDA(const int dir2, const int dir1, const int k, const int j, const int i)
+     {
+      const int ip1 = dir1 == 0 ? 1 : 0;
+      const int jp1 = dir1 == 1 ? 1 : 0;
+      const int kp1 = dir1 == 2 ? 1 : 0;
+      const int ip2 = dir2 == 0 ? 1 : 0;
+      const int jp2 = dir2 == 1 ? 1 : 0;
+      const int kp2 = dir2 == 2 ? 1 : 0;
+
+      const int dir = dir1 + (ndim)*dir2;
+
+      d2Scratch(1,dir,k,j,i) = std::abs(d1Scratch(dir1,k+kp2,j+jp2,i+ip2)) 
+                               + std::abs(d1Scratch(dir1,k-kp2,j-jp2,i-ip2))*idx[dir2];
+      });
+
+  par_for(
+     loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
+     0, ndim-1, 0, ndim-1, ks, ke, js, je, is, ie,
+     KOKKOS_LAMBDA(const int dir2, const int dir1, const int k, const int j, const int i)
+     {
+      const int ip1 = dir1 == 0 ? 1 : 0;
+      const int jp1 = dir1 == 1 ? 1 : 0;
+      const int kp1 = dir1 == 2 ? 1 : 0;
+      const int ip2 = dir2 == 0 ? 1 : 0;
+      const int jp2 = dir2 == 1 ? 1 : 0;
+      const int kp2 = dir2 == 2 ? 1 : 0;
+
+      const int dir = dir1 + (ndim)*dir2;
+
+      d2Scratch(2,dir,k,j,i) = std::abs(q(k+kp2+kp1,j+jp2+jp1,i+ip2+ip1)) + std::abs(q(k-kp2+kp1,j-jp2+jp1,i-ip2+ip1))
+                             + std::abs(q(k+kp2-kp1,j+jp2-jp1,i+ip2-ip1)) + std::abs(q(k-kp2-kp1,j-jp2-jp1,i-ip2-ip1));
+      d2Scratch(2,dir,k,j,i) *= idx[dir1]*idx[dir2];
+      });
+
+  Kokkos::fence();
+  Real error = 0.0;
+  par_reduce(
+      loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
+      ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(int k, int j, int i, Real &error) {
+         Real numer = 0., denom = std::numeric_limits<Real>::min();
+         for (int dir=0; dir < d2Scratch.GetDim(4); dir++) {
+           numer += std::pow(d2Scratch(0,dir,k,j,i),2);
+           denom += std::pow(d2Scratch(1,dir,k,j,i) + refine_filter*d2Scratch(3,k,j,i), 2);
+         }
+         Real err = numer/denom;
+         error = (err > error ? err : error);
+      },
+      Kokkos::Max<Real>(error));
+
+  error = std::sqrt(error);
+
+  if (error > refine_criteria) return AmrTag::refine;
+  if (error < derefine_criteria) return AmrTag::derefine;
   return AmrTag::same;
 }
 
