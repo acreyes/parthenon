@@ -197,6 +197,7 @@ void FirstDerivative(const AMRBounds &bnds, MeshData<Real> *md, const std::strin
   const Real derefine_criteria = derefine_criteria_;
   const int max_level = max_level_;
   const int var = idx;
+  // get a scatterview for the tags that will use Kokkos::Max as the reduction operation
   auto scatter_tags = amr_tags.ToScatterView<Kokkos::Experimental::ScatterMax>();
   par_for_outer(
       PARTHENON_AUTO_LABEL, 0, 0, 0, pack.GetNBlocks() - 1, bnds.ks, bnds.ke, bnds.js,
@@ -230,6 +231,8 @@ void FirstDerivative(const AMRBounds &bnds, MeshData<Real> *md, const std::strin
         if (maxd > refine_criteria && pack.GetLevel(b, 0, 0, 0) < max_level)
           flag = AmrTag::refine;
         if (maxd < derefine_criteria) flag = AmrTag::derefine;
+        // ScatterMax view will use an atomic_max to prevent race condition across k,j
+        // indices
         tags_access(b).update(flag);
       });
   amr_tags.ContributeScatter(scatter_tags);
@@ -249,6 +252,7 @@ void SecondDerivative(const AMRBounds &bnds, MeshData<Real> *md, const std::stri
   const Real derefine_criteria = derefine_criteria_;
   const int max_level = max_level_;
   const int var = idx;
+  // get a scatterview for the tags that will use Kokkos::Max as the reduction operation
   auto scatter_tags = amr_tags.ToScatterView<Kokkos::Experimental::ScatterMax>();
   par_for_outer(
       PARTHENON_AUTO_LABEL, 0, 0, 0, pack.GetNBlocks() - 1, bnds.ks, bnds.ke, bnds.js,
@@ -279,6 +283,8 @@ void SecondDerivative(const AMRBounds &bnds, MeshData<Real> *md, const std::stri
         if (maxd > refine_criteria && pack.GetLevel(b, 0, 0, 0) < max_level)
           flag = AmrTag::refine;
         if (maxd < derefine_criteria) flag = AmrTag::derefine;
+        // ScatterMax view will use an atomic_max to prevent race condition across k,j
+        // indices
         tags_access(b).update(flag);
       });
   amr_tags.ContributeScatter(scatter_tags);
