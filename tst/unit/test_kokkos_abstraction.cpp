@@ -40,6 +40,14 @@
 #include "utils/type_list.hpp"
 
 using parthenon::DevExecSpace;
+#include "utils/robust.hpp"
+
+using parthenon::DevExecSpace;
+using parthenon::ParArray1D;
+using parthenon::ParArray2D;
+using parthenon::ParArray3D;
+using parthenon::ParArray4D;
+using parthenon::robust::SoftEquiv;
 using Real = double;
 
 template <std::size_t Ni>
@@ -335,12 +343,15 @@ struct test_wrapper_nested_nd_impl {
       for (int i = 1 + bounds[Rank - 1].s; i < bounds[Rank - 1].e - 1; i++) {
         const Real analytic =
             2.0 * (i + Rank) * pow((1 * ... * (indices[Is] + 1 + Is)), 2.0);
-        const Real err = host_du(indices[Is]..., i) - analytic;
-        max_rel_err = fmax(fabs(err / analytic), max_rel_err);
+        const Real rel_tol = std::numeric_limits<Real>::epsilon();
+
+        if (!SoftEquiv(host_du(indices[Is]..., i), analytic, rel_tol)) {
+          return false;
+        }
       }
     }
 
-    return max_rel_err < rel_tol;
+    return true;
   }
 
   template <std::size_t Ninner, class OuterPattern, class InnerPattern>
