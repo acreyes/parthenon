@@ -19,6 +19,7 @@
 - [[PR 1172]](https://github.com/parthenon-hpc-lab/parthenon/pull/1172) Make parthenon manager robust against external MPI init and finalize calls
 
 ### Fixed (not changing behavior/API/variables/...)
+- [[PR 1170]](https://github.com/parthenon-hpc-lab/parthenon/pull/1170) Fixed incorrect initialization of array by a const not constexpr
 - [[PR 1189]](https://github.com/parthenon-hpc-lab/parthenon/pull/1189) Address CUDA MPI/ICP issue with Kokkos <=4.4.1
 - [[PR 1178]](https://github.com/parthenon-hpc-lab/parthenon/pull/1178) Fix issue with mesh pointer when using relative residual tolerance in BiCGSTAB solver.
 - [[PR 1173]](https://github.com/parthenon-hpc-lab/parthenon/pull/1173) Make debugging easier by making parthenon throw an error if ParameterInput is different on multiple MPI ranks.
