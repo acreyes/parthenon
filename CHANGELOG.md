@@ -13,6 +13,7 @@
 
 ### Changed (changing behavior/API/variables/...)
 - [[PR 1186]](https://github.com/parthenon-hpc-lab/parthenon/pull/1186) Bump Kokkos submodule to 4.4.1
+- [[PR1177]](https://github.com/parthenon-hpc-lab/parthenon/pull/1177) Make mesh-level boundary conditions usable without the "user" flag
 - [[PR 1171]](https://github.com/parthenon-hpc-lab/parthenon/pull/1171) Add PARTHENON_USE_SYSTEM_PACKAGES build option
 - [[PR 1172]](https://github.com/parthenon-hpc-lab/parthenon/pull/1172) Make parthenon manager robust against external MPI init and finalize calls
 
@@ -27,7 +28,7 @@
 
 
 ### Incompatibilities (i.e. breaking changes)
-
+- [[PR1177]](https://github.com/parthenon-hpc-lab/parthenon/pull/1177) Make mesh-level boundary conditions usable without the "user" flag
 
 ## Release 24.08
 Date: 2024-08-30
