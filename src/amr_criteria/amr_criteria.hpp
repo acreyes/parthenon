@@ -36,7 +36,6 @@ struct AMRBounds {
 struct AMRCriteria {
   AMRCriteria(ParameterInput *pin, std::string &block_name);
   virtual ~AMRCriteria() {}
-  virtual AmrTag operator()(const MeshBlockData<Real> *rc) const = 0;
   virtual void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const = 0;
   std::string field;
   Real refine_criteria, derefine_criteria;
@@ -44,20 +43,17 @@ struct AMRCriteria {
   int comp6, comp5, comp4;
   static std::shared_ptr<AMRCriteria>
   MakeAMRCriteria(std::string &criteria, ParameterInput *pin, std::string &block_name);
-  AMRBounds GetBounds(const MeshBlockData<Real> *rc) const;
 };
 
 struct AMRFirstDerivative : public AMRCriteria {
   AMRFirstDerivative(ParameterInput *pin, std::string &block_name)
       : AMRCriteria(pin, block_name) {}
-  AmrTag operator()(const MeshBlockData<Real> *rc) const override;
   void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const override;
 };
 
 struct AMRSecondDerivative : public AMRCriteria {
   AMRSecondDerivative(ParameterInput *pin, std::string &block_name)
       : AMRCriteria(pin, block_name) {}
-  AmrTag operator()(const MeshBlockData<Real> *rc) const override;
   void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const override;
 };
 

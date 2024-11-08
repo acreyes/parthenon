@@ -94,13 +94,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   pkg->AddField<Conserved::divD>(
       Metadata({Metadata::Cell, Metadata::Derived, Metadata::OneCopy}));
 
-  bool check_refine_mesh =
-      pin->GetOrAddBoolean("parthenon/mesh", "CheckRefineMesh", true);
-  if (check_refine_mesh) {
-    pkg->CheckRefinementMesh = CheckRefinementMesh;
-  } else {
-    pkg->CheckRefinementBlock = CheckRefinement;
-  }
+  pkg->CheckRefinementMesh = CheckRefinementMesh;
   pkg->EstimateTimestepMesh = EstimateTimestep;
   pkg->FillDerivedMesh = FillDerived;
   return pkg;
@@ -129,10 +123,12 @@ void CheckRefinementMesh(MeshData<Real> *md, parthenon::ParArray1D<AmrTag> &amr_
             parthenon::inner_loop_pattern_ttr_tag, team_member, jb.s, jb.e, ib.s, ib.e,
             [&](const int j, const int i,
                 typename Kokkos::MinMax<Real>::value_type &lminmax) {
-              lminmax.min_val = (pack(n, k, j, i) < lminmax.min_val ? pack(n, k, j, i)
-                                                                    : lminmax.min_val);
-              lminmax.max_val = (pack(n, k, j, i) > lminmax.max_val ? pack(n, k, j, i)
-                                                                    : lminmax.max_val);
+              lminmax.min_val =
+                  (pack(b, n, k, j, i) < lminmax.min_val ? pack(b, n, k, j, i)
+                                                         : lminmax.min_val);
+              lminmax.max_val =
+                  (pack(b, n, k, j, i) > lminmax.max_val ? pack(b, n, k, j, i)
+                                                         : lminmax.max_val);
             },
             Kokkos::MinMax<Real>(minmax));
 
@@ -144,39 +140,6 @@ void CheckRefinementMesh(MeshData<Real> *md, parthenon::ParArray1D<AmrTag> &amr_
         tags_access(b).update(flag);
       });
   amr_tags.ContributeScatter(scatter_tags);
-}
-
-AmrTag CheckRefinement(MeshBlockData<Real> *rc) {
-  // refine on advected, for example.  could also be a derived quantity
-  static auto desc = parthenon::MakePackDescriptor<Conserved::phi>(rc);
-  auto pack = desc.GetPack(rc);
-
-  auto pmb = rc->GetBlockPointer();
-  IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::entire);
-  IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::entire);
-  IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::entire);
-
-  typename Kokkos::MinMax<Real>::value_type minmax;
-  parthenon::par_reduce(
-      parthenon::loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(),
-      pack.GetLowerBoundHost(0), pack.GetUpperBoundHost(0), kb.s, kb.e, jb.s, jb.e, ib.s,
-      ib.e,
-      KOKKOS_LAMBDA(const int n, const int k, const int j, const int i,
-                    typename Kokkos::MinMax<Real>::value_type &lminmax) {
-        lminmax.min_val =
-            (pack(n, k, j, i) < lminmax.min_val ? pack(n, k, j, i) : lminmax.min_val);
-        lminmax.max_val =
-            (pack(n, k, j, i) > lminmax.max_val ? pack(n, k, j, i) : lminmax.max_val);
-      },
-      Kokkos::MinMax<Real>(minmax));
-
-  auto pkg = pmb->packages.Get("advection_package");
-  const auto &refine_tol = pkg->Param<Real>("refine_tol");
-  const auto &derefine_tol = pkg->Param<Real>("derefine_tol");
-
-  if (minmax.max_val > refine_tol && minmax.min_val < derefine_tol) return AmrTag::refine;
-  if (minmax.max_val < derefine_tol) return AmrTag::derefine;
-  return AmrTag::same;
 }
 
 Real EstimateTimestep(MeshData<Real> *md) {

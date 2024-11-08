@@ -36,9 +36,6 @@ namespace Refinement {
 
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto ref = std::make_shared<StateDescriptor>("Refinement");
-  bool check_refine_mesh =
-      pin->GetOrAddBoolean("parthenon/mesh", "CheckRefineMesh", true);
-  ref->AddParam("check_refine_mesh", check_refine_mesh);
 
   int numcrit = 0;
   while (true) {
@@ -60,17 +57,12 @@ ParArray1D<AmrTag> CheckAllRefinement(MeshData<Real> *md) {
   auto amr_tags = pm->GetAmrTags();
   Kokkos::deep_copy(amr_tags.KokkosView(), AmrTag::derefine);
 
-  static const bool check_refine_mesh =
-      pm->packages.Get("Refinement")->Param<bool>("check_refine_mesh");
-
   for (auto &pkg : pm->packages.AllPackages()) {
     auto &desc = pkg.second;
     desc->CheckRefinement(md, amr_tags);
 
-    if (check_refine_mesh) {
-      for (auto &amr : desc->amr_criteria) {
-        (*amr)(md, amr_tags);
-      }
+    for (auto &amr : desc->amr_criteria) {
+      (*amr)(md, amr_tags);
     }
   }
 
@@ -91,8 +83,6 @@ AmrTag CheckAllRefinement(MeshBlockData<Real> *rc, const AmrTag &level) {
   //       neighboring blocks.  Similarly for "do nothing"
   PARTHENON_INSTRUMENT
   MeshBlock *pmb = rc->GetBlockPointer();
-  static const bool check_refine_mesh =
-      pmb->packages.Get("Refinement")->Param<bool>("check_refine_mesh");
   // delta_level holds the max over all criteria.  default to derefining, or level from
   // MeshData check.
   AmrTag delta_level = level;
@@ -102,22 +92,6 @@ AmrTag CheckAllRefinement(MeshBlockData<Real> *rc, const AmrTag &level) {
     if (delta_level == AmrTag::refine) {
       // since 1 is the max, we can return without having to look at anything else
       return AmrTag::refine;
-    }
-    if (check_refine_mesh) continue;
-    // call parthenon criteria that were registered
-    for (auto &amr : desc->amr_criteria) {
-      // get the recommended change in refinement level from this criteria
-      AmrTag temp_delta = (*amr)(rc);
-      if ((temp_delta == AmrTag::refine) && pmb->loc.level() >= amr->max_level) {
-        // don't refine if we're at the max level
-        temp_delta = AmrTag::same;
-      }
-      // maintain the max across all criteria
-      delta_level = std::max(delta_level, temp_delta);
-      if (delta_level == AmrTag::refine) {
-        // 1 is the max, so just return
-        return AmrTag::refine;
-      }
     }
   }
   return delta_level;
