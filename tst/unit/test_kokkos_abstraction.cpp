@@ -333,7 +333,6 @@ struct test_wrapper_nested_nd_impl {
     // Copy array back from device to host
     Kokkos::deep_copy(host_du, dev_du);
 
-    Real max_rel_err = -1;
     const Real rel_tol = std::numeric_limits<Real>::epsilon();
 
     auto idxer =
@@ -343,7 +342,6 @@ struct test_wrapper_nested_nd_impl {
       for (int i = 1 + bounds[Rank - 1].s; i < bounds[Rank - 1].e - 1; i++) {
         const Real analytic =
             2.0 * (i + Rank) * pow((1 * ... * (indices[Is] + 1 + Is)), 2.0);
-        const Real rel_tol = std::numeric_limits<Real>::epsilon();
 
         if (!SoftEquiv(host_du(indices[Is]..., i), analytic, rel_tol)) {
           return false;
@@ -640,7 +638,7 @@ TEST_CASE("DEFAULT loop patterns", "[default]") {
     parthenon::seq_for(
         0, N - 1, 0, N - 1, 0, N - 1, [&](const int k, const int j, const int i) {
           if (arr_host_orig(k, j, i) + wrapper_par_for.increment_data(k, j, i) !=
-              dev_view(k, j, i)) {
+              arr_host_mod(k, j, i)) {
             all_same = false;
           }
         });
