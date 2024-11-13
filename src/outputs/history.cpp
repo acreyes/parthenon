@@ -95,8 +95,8 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin, SimTime *tm,
 
   // Loop over all packages of the application in alphabetical order
   std::vector<std::string> keys;
-  for (const auto& pair : packages) {
-        keys.push_back(pair.first);
+  for (const auto &pair : packages) {
+    keys.push_back(pair.first);
   }
   std::sort(keys.begin(), keys.end());
   for (const auto &key : keys) {
