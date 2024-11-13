@@ -93,8 +93,14 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin, SimTime *tm,
     md_base->Initialize(pm->block_list, pm);
   }
 
-  // Loop over all packages of the application
-  for (const auto &pkg : packages) {
+  // Loop over all packages of the application in alphabetical order
+  std::vector<std::string> keys;
+  for (const auto& pair : packages) {
+        keys.push_back(pair.first);
+  }
+  std::sort(keys.begin(), keys.end());
+  for (const auto &key : keys) {
+    const auto &pkg = packages[key];
     const auto &params = pkg.second->AllParams();
 
     // Check if the package has enrolled scalar history functions which are stored in the
