@@ -18,6 +18,7 @@
 //  \brief writes history output data, volume-averaged quantities that are output
 //         frequently in time to trace their history.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
