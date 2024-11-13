@@ -93,7 +93,8 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin, SimTime *tm,
     md_base->Initialize(pm->block_list, pm);
   }
 
-  // Loop over all packages of the application in alphabetical order
+  // Loop over all packages of the application in alphabetical order to ensure consistency
+  // of ordering of data in columns.
   std::vector<std::string> keys;
   for (const auto &pair : packages) {
     keys.push_back(pair.first);
