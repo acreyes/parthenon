@@ -101,7 +101,7 @@ void HistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin, SimTime *tm,
   std::sort(keys.begin(), keys.end());
   for (const auto &key : keys) {
     const auto &pkg = packages[key];
-    const auto &params = pkg.second->AllParams();
+    const auto &params = pkg->AllParams();
 
     // Check if the package has enrolled scalar history functions which are stored in the
     // Params under the `hist_param_key` name.
