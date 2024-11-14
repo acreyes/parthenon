@@ -12,6 +12,7 @@
 - [[PR 1161]](https://github.com/parthenon-hpc-lab/parthenon/pull/1161) Make flux field Metadata accessible, add Metadata::CellMemAligned flag, small perfomance upgrades
 
 ### Changed (changing behavior/API/variables/...)
+- [[PR 1209]](https://github.com/parthenon-hpc-lab/parthenon/pull/1209) Ordered history output
 - [[PR 1206]](https://github.com/parthenon-hpc-lab/parthenon/pull/1206) Leapfrog fix
 - [[PR1203]](https://github.com/parthenon-hpc-lab/parthenon/pull/1203) Pin Ubuntu CI image
 - [[PR1177]](https://github.com/parthenon-hpc-lab/parthenon/pull/1177) Make mesh-level boundary conditions usable without the "user" flag
