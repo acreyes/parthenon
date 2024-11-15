@@ -145,7 +145,7 @@ void CheckRefinementMesh(MeshData<Real> *md, parthenon::ParArray1D<AmrTag> &amr_
         pack.GetMaxNumberOfVars() - 1, kb.s, kb.e,
         KOKKOS_LAMBDA(parthenon::team_mbr_t team_member, const int b, const int n,
                       const int k) {
-          if (pack.GetIndex(b, Conserved::phi()) < 0) return;
+          if (n > pack.GetUpperBound(b)) return;
           typename Kokkos::MinMax<Real>::value_type minmax;
           par_reduce_inner(
               parthenon::inner_loop_pattern_ttr_tag, team_member, jb.s, jb.e, ib.s, ib.e,
