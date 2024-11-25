@@ -34,8 +34,6 @@
 #include <utility>
 #include <vector>
 
-#include "Kokkos_Core.hpp"
-#include "basic_types.hpp"
 #include "bvals/boundary_conditions.hpp"
 #include "bvals/comms/tag_map.hpp"
 #include "config.hpp"
