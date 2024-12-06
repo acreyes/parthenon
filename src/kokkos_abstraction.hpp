@@ -105,26 +105,26 @@ constexpr InnerLoopPatternSimdFor inner_loop_pattern_simdfor_tag;
 
 // trait to track if pattern requests any type of hierarchial parallelism
 template <typename Pattern, typename T = void>
-struct UsesHierarchialPar : std::false_type {
+struct UsesHierarchicalPar : std::false_type {
   static constexpr std::size_t Nvector = 0;
   static constexpr std::size_t Nthread = 0;
 };
 
 template <std::size_t num_thread, std::size_t num_vector>
-struct UsesHierarchialPar<LoopPatternTeamThreadVec<num_thread, num_vector>>
+struct UsesHierarchicalPar<LoopPatternTeamThreadVec<num_thread, num_vector>>
     : std::true_type {
   static constexpr std::size_t Nthread = num_thread;
   static constexpr std::size_t Nvector = num_vector;
 };
 
 template <>
-struct UsesHierarchialPar<OuterLoopPatternTeams> : std::true_type {
+struct UsesHierarchicalPar<OuterLoopPatternTeams> : std::true_type {
   static constexpr std::size_t Nvector = 0;
   static constexpr std::size_t Nthread = 0;
 };
 
 template <std::size_t num_vector>
-struct UsesHierarchialPar<InnerLoopThreadVec<num_vector>> : std::true_type {
+struct UsesHierarchicalPar<InnerLoopThreadVec<num_vector>> : std::true_type {
   static constexpr std::size_t Nvector = num_vector;
 };
 
@@ -191,7 +191,7 @@ struct DispatchType {
   using Translator = LoopBoundTranslator<Bounds...>;
   static constexpr std::size_t Rank = Translator::Rank;
 
-  using HierarchialPar = UsesHierarchialPar<Pattern>;
+  using HierarchicalPar = UsesHierarchicalPar<Pattern>;
 
   static constexpr bool is_ParFor =
       std::is_same<Tag, dispatch_impl::ParallelForDispatch>::value;
@@ -223,7 +223,7 @@ struct DispatchType {
       return PT::md;
     } else if constexpr (std::is_same_v<Pattern, OuterLoopPatternTeams>) {
       return PT::outer;
-    } else if constexpr (HierarchialPar::value) {
+    } else if constexpr (HierarchicalPar::value) {
       return PT::collapse;
     }
 
@@ -360,7 +360,7 @@ struct par_disp_inner_impl<Pattern, Function, TypeList<Bounds...>, TypeList<Args
                                            Function function, Args &&...args) {
     auto bound_arr = bound_translator().GetIndexRanges(std::forward<Bounds>(bounds)...);
     constexpr bool isSimdFor = std::is_same_v<InnerLoopPatternSimdFor, Pattern>;
-    constexpr std::size_t Nvector = dispatch_type::HierarchialPar::Nvector;
+    constexpr std::size_t Nvector = dispatch_type::HierarchicalPar::Nvector;
     constexpr std::size_t Nthread = Rank - Nvector;
     constexpr auto pattern_tag = LoopPatternTag<dispatch_type::GetPatternTag()>();
 
@@ -409,7 +409,7 @@ struct par_dispatch_impl<Tag, Pattern, Function, TypeList<Bounds...>, TypeList<A
                        Function function, Args &&...args, const int scratch_level = 0,
                        const std::size_t scratch_size_in_bytes = 0) {
     constexpr std::size_t Ninner =
-        dispatch_type::HierarchialPar::Nvector + dispatch_type::HierarchialPar::Nthread;
+        dispatch_type::HierarchicalPar::Nvector + dispatch_type::HierarchicalPar::Nthread;
 
     constexpr auto pattern_tag = LoopPatternTag<dispatch_type::GetPatternTag()>();
     static_assert(
@@ -486,11 +486,16 @@ struct par_dispatch_impl<Tag, Pattern, Function, TypeList<Bounds...>, TypeList<A
                             Args &&...args, const int scratch_level,
                             const std::size_t scratch_size_in_bytes) {
     static_assert(sizeof...(InnerIs) == 0);
-    kokkos_dispatch(
-        Tag(), name,
-        Kokkos::MDRangePolicy<Kokkos::Rank<Rank>>(exec_space, {bound_arr[OuterIs].s...},
-                                                  {(1 + bound_arr[OuterIs].e)...}),
-        function, std::forward<Args>(args)...);
+    constexpr std::size_t Nouter = sizeof...(OuterIs);
+    Kokkos::Array<int, Nouter> tiling{(OuterIs, 1)...};
+    tiling[Nouter - 1] = bound_arr[Nouter - 1].e + 1 - bound_arr[Nouter - 1].s;
+    kokkos_dispatch(Tag(), name,
+                    Kokkos::Experimental::require(
+                        Kokkos::MDRangePolicy<Kokkos::Rank<Rank>>(
+                            exec_space, {bound_arr[OuterIs].s...},
+                            {(1 + bound_arr[OuterIs].e)...}, tiling),
+                        Kokkos::Experimental::WorkItemProperty::HintLightWeight),
+                    function, std::forward<Args>(args)...);
   }
 
   // Flatten loop bounds into a single outer team_policy
@@ -525,9 +530,9 @@ struct par_dispatch_impl<Tag, Pattern, Function, TypeList<Bounds...>, TypeList<A
                             const std::size_t scratch_size_in_bytes) {
     const auto idxer =
         MakeIndexer(Kokkos::Array<IndexRange, sizeof...(OuterIs)>{bound_arr[OuterIs]...});
-    using HierarchialPar = typename dispatch_type::HierarchialPar;
-    constexpr std::size_t Nvector = HierarchialPar::Nvector;
-    constexpr std::size_t Nthread = HierarchialPar::Nthread;
+    using HierarchicalPar = typename dispatch_type::HierarchicalPar;
+    constexpr std::size_t Nvector = HierarchicalPar::Nvector;
+    constexpr std::size_t Nthread = HierarchicalPar::Nthread;
     constexpr std::size_t Nouter = Rank - Nvector - Nthread;
     kokkos_dispatch(
         Tag(), name,
