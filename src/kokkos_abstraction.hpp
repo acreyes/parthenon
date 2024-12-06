@@ -500,13 +500,14 @@ struct par_dispatch_impl<Tag, Pattern, Function, TypeList<Bounds...>, TypeList<A
                             Kokkos::Array<IndexRange, Rank> bound_arr, Function function,
                             Args &&...args, const int scratch_level,
                             const std::size_t scratch_size_in_bytes) {
-    const auto idxer =
-        MakeIndexer(Kokkos::Array<IndexRange, sizeof...(OuterIs)>{bound_arr[OuterIs]...});
+    const std::size_t size = ((bound_arr[OuterIs].e - bound_arr[OuterIs].s + 1) * ...);
     kokkos_dispatch(
         Tag(), name,
-        team_policy(exec_space, idxer.size(), Kokkos::AUTO)
+        team_policy(exec_space, size, Kokkos::AUTO)
             .set_scratch_size(scratch_level, Kokkos::PerTeam(scratch_size_in_bytes)),
         KOKKOS_LAMBDA(team_mbr_t team_member, ExtraFuncArgs... fargs) {
+          const auto idxer = MakeIndexer(
+              Kokkos::Array<IndexRange, sizeof...(OuterIs)>{bound_arr[OuterIs]...});
           const auto idx_arr = idxer.GetIdxArray(team_member.league_rank());
           function(team_member, idx_arr[OuterIs]...,
                    std::forward<ExtraFuncArgs>(fargs)...);
