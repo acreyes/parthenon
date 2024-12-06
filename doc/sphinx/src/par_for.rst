@@ -70,7 +70,7 @@ When ommitted the ``DEFAULT_LOOP_PATTERN`` is used.
    * - ``loop_pattern_mdrange_tag``
      - Maps all the loop bounds onto a ``Kokkos::MDRangePolicy``
    * - ``LoopPatternTeamThreadVec<Nt, Nv>()``
-     - Maps onto a hierarchial parrallel loop. The ``Nv`` inner loops are flattened onto a ``VectorRange`` policy,
+     - Maps onto a hierarchical parallel loop. The ``Nv`` inner loops are flattened onto a ``VectorRange`` policy,
        the next ``Nt`` onto a ``ThreadRange`` policy, and the remaining loops are 
        flattened into an outer ``TeamThreadRange``. The specializations ``loop_pattern_[tpttr|tptvr|tpttrtvr]_tag`` correspond
        to ``<1,0>``, ``<0,1>``, ``<1,1>`` respectively.
