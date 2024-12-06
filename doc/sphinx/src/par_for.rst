@@ -66,7 +66,7 @@ When ommitted the ``DEFAULT_LOOP_PATTERN`` is used.
      - Flattens all of the loops into a single ``Kokkos::RangePolicy``
    * - ``loop_pattern_simdfor_tag``
      - Maps to two C-style loops. The innermost gets decorated with a ``#pragma omp simd`` and the remaining
-       loops are flattened into a single C-style for looop. Only supported on CPU.
+       loops are flattened into a single C-style for loop. Only supported on CPU.
    * - ``loop_pattern_mdrange_tag``
      - Maps all the loop bounds onto a ``Kokkos::MDRangePolicy``
    * - ``LoopPatternTeamThreadVec<Nt, Nv>()``
