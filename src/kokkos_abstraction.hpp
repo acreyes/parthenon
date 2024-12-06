@@ -332,7 +332,7 @@ struct dispatch_collapse {
 };
 
 // builds a functor that uses inner hierarchial parrallelism used by both par_disp_inner &
-// par_dipsatch for LoopPatternCollapse
+// par_dispatch for LoopPatternCollapse
 template <std::size_t Rank, std::size_t Nteam, std::size_t Nthread, std::size_t Nvector,
           typename IdxTeam, typename Function, typename... ExtraFuncArgs>
 KOKKOS_FORCEINLINE_FUNCTION auto
