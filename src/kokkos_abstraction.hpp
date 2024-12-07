@@ -195,6 +195,8 @@ struct DispatchType {
 
   static constexpr bool is_ParFor =
       std::is_same<Tag, dispatch_impl::ParallelForDispatch>::value;
+  static constexpr bool is_ParRed =
+      std::is_same<Tag, dispatch_impl::ParallelReduceDispatch>::value;
   static constexpr bool is_ParScan =
       std::is_same<Tag, dispatch_impl::ParallelScanDispatch>::value;
 
@@ -219,7 +221,8 @@ struct DispatchType {
       // for now this is guaranteed to be par_for_inner, when par_reduce_inner is
       // supported need to check
       return PT::simd;
-    } else if constexpr (IsMDRange) {
+    } else if constexpr (IsMDRange || is_ParRed) {
+      // par_reduce does not currently work with either team-based patterns
       return PT::md;
     } else if constexpr (std::is_same_v<Pattern, OuterLoopPatternTeams>) {
       return PT::outer;
