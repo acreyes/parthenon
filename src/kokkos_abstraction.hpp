@@ -490,7 +490,9 @@ struct par_dispatch_impl<Tag, Pattern, Function, TypeList<Bounds...>, TypeList<A
                             const std::size_t scratch_size_in_bytes) {
     static_assert(sizeof...(InnerIs) == 0);
     constexpr std::size_t Nouter = sizeof...(OuterIs);
-    Kokkos::Array<int, Nouter> tiling{(OuterIs, 1)...};
+    Kokkos::Array<int, Nouter> tiling;
+    for (int i = 0; i < Nouter - 1; i++)
+      tiling[i] = 1;
     tiling[Nouter - 1] = bound_arr[Nouter - 1].e + 1 - bound_arr[Nouter - 1].s;
     kokkos_dispatch(Tag(), name,
                     Kokkos::Experimental::require(
