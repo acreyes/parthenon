@@ -64,8 +64,8 @@ class MeshBlockData {
   // Public Methods
   //-----------------
   /// Constructor
-  MeshBlockData<T>() = default;
-  explicit MeshBlockData<T>(const std::string &name) : stage_name_(name) {}
+  MeshBlockData() = default;
+  explicit MeshBlockData(const std::string &name) : stage_name_(name) {}
 
   std::shared_ptr<MeshBlock> GetBlockSharedPointer() const {
     if (pmy_block.expired()) {
