@@ -32,7 +32,7 @@ std::vector<CoordinateDirection> CellCentOffsets::GetTangentDirections() const {
   std::vector<CoordinateDirection> dirs;
   CoordinateDirection missed;
   for (auto dir : {X1DIR, X2DIR, X3DIR}) {
-    uint dir_idx = static_cast<uint>(dir);
+    unsigned int dir_idx = static_cast<unsigned int>(dir);
     if (!static_cast<int>(u[dir_idx - 1])) { // This direction has no offset, so must be
                                              // tangent direction
       dirs.push_back(dir);
@@ -50,7 +50,7 @@ std::vector<std::pair<CoordinateDirection, Offset>> CellCentOffsets::GetNormals(
   std::vector<std::pair<CoordinateDirection, Offset>> dirs;
   CoordinateDirection missed;
   for (auto dir : {X1DIR, X2DIR, X3DIR}) {
-    uint dir_idx = dir - 1;
+    unsigned int dir_idx = dir - 1;
     if (static_cast<int>(u[dir_idx])) {
       dirs.push_back({dir, u[dir_idx]});
     } else {
