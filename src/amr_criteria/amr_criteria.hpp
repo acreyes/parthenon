@@ -15,7 +15,6 @@
 
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "defs.hpp"
 #include "mesh/domain.hpp"
@@ -37,9 +36,7 @@ struct AMRBounds {
 struct AMRCriteria {
   AMRCriteria(ParameterInput *pin, std::string &block_name);
   virtual ~AMRCriteria() {}
-  virtual AmrTag operator()(const MeshBlockData<Real> *rc) const = 0;
-  virtual void operator()(MeshData<Real> *mc, const std::vector<std::string> &fields,
-                          ParArray1D<AmrTag> &delta_level) const = 0;
+  virtual void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const = 0;
   std::string field;
   Real refine_criteria, derefine_criteria;
   int max_level;
@@ -51,17 +48,13 @@ struct AMRCriteria {
 struct AMRFirstDerivative : public AMRCriteria {
   AMRFirstDerivative(ParameterInput *pin, std::string &block_name)
       : AMRCriteria(pin, block_name) {}
-  AmrTag operator()(const MeshBlockData<Real> *rc) const override;
-  void operator()(MeshData<Real> *mc, const std::vector<std::string> &fields,
-                  ParArray1D<AmrTag> &delta_level) const override;
+  void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const override;
 };
 
 struct AMRSecondDerivative : public AMRCriteria {
   AMRSecondDerivative(ParameterInput *pin, std::string &block_name)
       : AMRCriteria(pin, block_name) {}
-  AmrTag operator()(const MeshBlockData<Real> *rc) const override;
-  void operator()(MeshData<Real> *mc, const std::vector<std::string> &fields,
-                  ParArray1D<AmrTag> &delta_level) const override;
+  void operator()(MeshData<Real> *md, ParArray1D<AmrTag> &delta_level) const override;
 };
 
 } // namespace parthenon
