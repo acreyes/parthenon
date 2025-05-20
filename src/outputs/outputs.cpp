@@ -72,9 +72,9 @@
 #include "coordinates/coordinates.hpp"
 #include "defs.hpp"
 #include "globals.hpp"
-#include "interface/swarm_default_names.hpp"
 #include "mesh/mesh.hpp"
 #include "mesh/meshblock.hpp"
+#include "pack/swarm_default_names.hpp"
 #include "parameter_input.hpp"
 #include "parthenon_arrays.hpp"
 #include "utils/error_checking.hpp"
@@ -171,6 +171,7 @@ Outputs::Outputs(Mesh *pm, ParameterInput *pin, SimTime *tm) {
             pin->GetOrAddBoolean(op.block_name, "single_precision_output", false);
         op.sparse_seed_nans =
             pin->GetOrAddBoolean(op.block_name, "sparse_seed_nans", false);
+        op.meshdata_name = pin->GetOrAddString(op.block_name, "meshdata_name", "base");
       } else {
         op.single_precision_output = false;
         op.sparse_seed_nans = false;
