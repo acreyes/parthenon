@@ -375,7 +375,7 @@ def compare(
     # **************
     # import Reader
     # **************
-    from phdf import phdf
+    from .phdf import phdf
 
     # **************
     # Reader Help
