@@ -21,6 +21,7 @@ from __future__ import print_function
 # other imports
 import os
 import sys
+import math
 import numpy as np
 import argparse
 
@@ -512,7 +513,7 @@ def compare(
         err_max = err_mag.max()
 
         # Check if the error of any block exceeds the tolerance
-        if err_max > tol:
+        if err_max > tol or np.isnan(err_mag).any():
             no_diffs = False
             var_no_diffs = False
 
@@ -528,7 +529,7 @@ def compare(
                 bad_idxs = bad_idx.reshape((1, *bad_idx.shape))
             else:
                 # Print all differences exceeding maximum
-                bad_idxs = np.argwhere(err_mag > tol)
+                bad_idxs = np.argwhere((err_mag > tol) | (np.isnan(err_mag)))
 
             for bad_idx in bad_idxs:
                 bad_idx = tuple(bad_idx)
