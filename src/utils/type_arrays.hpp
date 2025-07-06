@@ -61,35 +61,6 @@ struct VarList {
 };
 
 namespace impl {
-template <typename>
-struct TypeListArray {};
-
-template <template <typename...> typename PackType, typename... Ts>
-struct TypeListArray<PackType<Ts...>> {
-  using type = PackType<Ts...>;
-  using Arr_t = Kokkos::Array<Real, type::ncomp>;
-
-  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in) : pack(pack_in) {}
-  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in, const Real &value)
-      : TypeListArray(pack_in) {
-    for (int idx = 0; idx < type::ncomp; idx++) {
-      data[idx] = value;
-    }
-  }
-  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in, Arr_t data_in)
-      : TypeListArray(pack_in), data(data_in) {}
-
-  template <typename V, REQUIRES(IncludesType<V, Ts...>::value)>
-  KOKKOS_INLINE_FUNCTION Real &operator()(const V &var) {
-    return data[pack.GetIndex(var)];
-  }
-
-  KOKKOS_INLINE_FUNCTION Real &operator[](const std::size_t &idx) { return data[idx]; }
-
- private:
-  Arr_t data;
-  const type &pack;
-};
 
 template <typename, typename, typename>
 struct ScratchPack_impl {};
@@ -147,11 +118,47 @@ struct PackLike {
 
 } // namespace impl
 
+template <typename>
+struct TypeListArray {};
+
+template <template <typename...> typename PackType, typename... Ts>
+struct TypeListArray<PackType<Ts...>> {
+  using type = PackType<Ts...>;
+  using Arr_t = Kokkos::Array<Real, type::ncomp>;
+
+  KOKKOS_INLINE_FUNCTION TypeListArray() = default;
+  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in) : pack(pack_in) {}
+  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in, const Real &value)
+      : TypeListArray(pack_in) {
+    for (int idx = 0; idx < type::ncomp; idx++) {
+      data[idx] = value;
+    }
+  }
+  KOKKOS_INLINE_FUNCTION TypeListArray(const type &pack_in, Arr_t data_in)
+      : TypeListArray(pack_in), data(data_in) {}
+
+  template <typename V, REQUIRES(IncludesType<V, Ts...>::value)>
+  KOKKOS_INLINE_FUNCTION Real operator()(const V &var) const {
+    return data[pack.GetIndex(var)];
+  }
+
+  template <typename V, REQUIRES(IncludesType<V, Ts...>::value)>
+  KOKKOS_INLINE_FUNCTION Real &operator()(const V &var) {
+    return data[pack.GetIndex(var)];
+  }
+
+  KOKKOS_INLINE_FUNCTION Real &operator[](const std::size_t &idx) { return data[idx]; }
+
+ private:
+  Arr_t data;
+  const type pack;
+};
+
 template <template <typename...> typename PackType, typename... Ts, typename... Args,
-          REQUIRES(implements<PackLike<Ts...>(PackType<Ts...>)>::value &&
+          REQUIRES(implements<impl::PackLike<Ts...>(PackType<Ts...>)>::value &&
                    !is_specialization_of<PackType<Ts...>, SparsePackList>::value)>
-KOKKOS_INLINE_FUNCTION auto TypeListArray(const PackType<Ts...> &pack, Args &&...args) {
-  return impl::TypeListArray<PackType<Ts...>>(pack, std::forward<Args>(args)...);
+KOKKOS_INLINE_FUNCTION auto ToTypeListArray(const PackType<Ts...> &pack, Args &&...args) {
+  return TypeListArray<PackType<Ts...>>(pack, std::forward<Args>(args)...);
 }
 
 template <typename ScratchPad, template <typename...> typename PackType, typename... Ts,
