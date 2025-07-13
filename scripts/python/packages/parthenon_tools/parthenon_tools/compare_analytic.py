@@ -98,12 +98,12 @@ def compare_analytic(
     """
 
     try:
-        import phdf
+        from .phdf import phdf
     except ModuleNotFoundError:
         print("Couldn't find module to read Parthenon hdf5 files.")
         return False
 
-    datafile = phdf.phdf(filename)
+    datafile = phdf(filename)
 
     # Dictionary of component_name:component[grid_idx,k,j,i]
     file_components = datafile.GetComponents(analytic_components.keys(), flatten=False)
