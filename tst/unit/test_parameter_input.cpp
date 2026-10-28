@@ -634,3 +634,28 @@ TEST_CASE("GetAsUnresolvedString returns string representations", "[ParameterInp
     }
   }
 }
+
+TEST_CASE("Overlay adds and overrides parameters", "[ParameterInput]") {
+  ParameterInput base;
+  std::istringstream base_is("<block1>\nvar1 = 1\nvar2 = base\n<block2>\nvar3 = 3.5\n");
+  base.LoadFromStream(base_is);
+
+  ParameterInput other;
+  std::istringstream other_is("<block1>\nvar2 = other\n<block3>\nvar4 = true\n");
+  other.LoadFromStream(other_is);
+  other.AddParsedParameter("block2", "var5", 7);
+
+  // Reading from other resolves its values, which overlay should still handle
+  REQUIRE(other.GetString("block1", "var2") == "other");
+
+  base.Overlay(other);
+
+  REQUIRE(base.GetInteger("block1", "var1") == 1);
+  REQUIRE(base.GetString("block1", "var2") == "other");
+  REQUIRE(base.GetReal("block2", "var3") == Approx(3.5));
+  REQUIRE(base.GetInteger("block2", "var5") == 7);
+  REQUIRE(base.GetBoolean("block3", "var4"));
+
+  // Overlay is part of the parsing phase
+  REQUIRE_THROWS(base.Overlay(other));
+}

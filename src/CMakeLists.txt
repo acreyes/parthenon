@@ -369,6 +369,7 @@ add_library(parthenon
   parthenon_manager.cpp
   parthenon_manager.hpp
   parthenon_mpi.hpp
+  runtime_options.hpp
 
   # Generated
   $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>/provenance.cpp

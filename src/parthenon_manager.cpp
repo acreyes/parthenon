@@ -56,6 +56,76 @@ ParthenonStatus ParthenonManager::ParthenonInitEnv(int argc, char *argv[]) {
   if (called_init_env_) {
     PARTHENON_THROW("ParthenonInitEnv called twice!");
   }
+
+  auto status = InitMPIAndKokkos_(argc, argv);
+  if (status != ParthenonStatus::ok) return status;
+
+  // parse the input arguments
+  ArgParse arg;
+  ArgStatus arg_status = arg.parse(argc, argv);
+  if (arg_status == ArgStatus::error) {
+    return ParthenonStatus::error;
+  } else if (arg_status == ArgStatus::complete) {
+    return ParthenonStatus::complete;
+  }
+
+  // Populate the ParameterInput object.
+  // If restart, then ParameterInput in the restart file takes precedence.
+  std::unique_ptr<ParameterInput> pin;
+  if (arg.opts.IsRestart()) {
+    pin = OpenRestart_(arg.opts.restart_filename.value());
+  }
+  // If an input file was provided
+  if (arg.input_filename) {
+    // Modify info read from restart file
+    if (arg.opts.IsRestart()) {
+      IOWrapper infile;
+      infile.Open(arg.input_filename->c_str(), IOWrapper::FileMode::read);
+      pin->LoadFromFile(infile);
+      infile.Close();
+
+      // Populate new object for fresh simulation
+    } else {
+      pin = std::make_unique<ParameterInput>(arg.input_filename.value());
+    }
+  }
+
+  // Modify based on command line inputs
+  pin->ModifyFromCmdline(argc, argv);
+
+  return FinishInitEnv_(std::move(pin), std::move(arg.opts));
+}
+
+ParthenonStatus ParthenonManager::ParthenonInitEnv(std::unique_ptr<ParameterInput> pin,
+                                                   RuntimeOptions opts) {
+  if (called_init_env_) {
+    PARTHENON_THROW("ParthenonInitEnv called twice!");
+  }
+  PARTHENON_REQUIRE_THROWS(pin != nullptr, "ParthenonInitEnv requires a ParameterInput");
+
+  // Kokkos::initialize expects argv[0] to be the program name
+  std::vector<std::string> args{"parthenon"};
+  args.insert(args.end(), opts.kokkos_args.begin(), opts.kokkos_args.end());
+  std::vector<char *> argv;
+  for (auto &str : args) {
+    argv.push_back(str.data());
+  }
+  argv.push_back(nullptr);
+  auto status = InitMPIAndKokkos_(static_cast<int>(args.size()), argv.data());
+  if (status != ParthenonStatus::ok) return status;
+
+  // If restart, then the ParameterInput in the restart file is the base that the
+  // provided ParameterInput modifies.
+  if (opts.IsRestart()) {
+    auto restart_pin = OpenRestart_(opts.restart_filename.value());
+    restart_pin->Overlay(*pin);
+    pin = std::move(restart_pin);
+  }
+
+  return FinishInitEnv_(std::move(pin), std::move(opts));
+}
+
+ParthenonStatus ParthenonManager::InitMPIAndKokkos_(int argc, char *argv[]) {
   called_init_env_ = true;
 
   // initialize MPI
@@ -77,7 +147,10 @@ ParthenonStatus ParthenonManager::ParthenonInitEnv(int argc, char *argv[]) {
   Globals::nranks = 1;
 #endif // MPI_PARALLEL
 
-  Kokkos::initialize(argc, argv);
+  if (!Kokkos::is_initialized()) {
+    Kokkos::initialize(argc, argv);
+    initialized_kokkos_ = true;
+  }
 
   // pgrete: This is a hack to disable allocation tracking until the Kokkos
   // tools provide a more fine grained control out of the box.
@@ -86,74 +159,58 @@ ParthenonStatus ParthenonManager::ParthenonInitEnv(int argc, char *argv[]) {
     Kokkos::Profiling::Experimental::set_allocate_data_callback(nullptr);
     Kokkos::Profiling::Experimental::set_deallocate_data_callback(nullptr);
   }
+  return ParthenonStatus::ok;
+}
 
-  // parse the input arguments
-  ArgStatus arg_status = arg.parse(argc, argv);
-  if (arg_status == ArgStatus::error) {
-    return ParthenonStatus::error;
-  } else if (arg_status == ArgStatus::complete) {
-    return ParthenonStatus::complete;
+std::unique_ptr<ParameterInput>
+ParthenonManager::OpenRestart_(const std::string &restart_filename) {
+  // Read input from restart file
+  if (fs::path(restart_filename).extension() == ".rhdf") {
+#ifdef ENABLE_HDF5
+    restartReader = std::make_unique<RestartReaderHDF5>(restart_filename.c_str());
+#else // HDF5 disabled
+    PARTHENON_FAIL("Restart functionality is not available because HDF5 is disabled");
+#endif
+  } else if (fs::path(restart_filename).extension() == ".bp" ||
+             // allow user input for /path/to/restart.bp/ (with trailing `/`), e.g.,
+             // from autocomplete
+             (fs::is_directory(restart_filename) &&
+              fs::path(restart_filename).parent_path().extension() == ".bp")) {
+#ifdef PARTHENON_ENABLE_OPENPMD
+    restartReader = std::make_unique<RestartReaderOPMD>(restart_filename.c_str());
+#else
+    PARTHENON_FAIL("Trying to restart from OpenPMD file but OpenPMD support was not "
+                   "compiled into Parthenon.");
+#endif // ifdef PARTHENON_ENABLE_OPENPMD
+  } else {
+    PARTHENON_FAIL("Unsupported restart file format.");
   }
 
-  Globals::watchdog_enabled = arg.watchdog_enabled;
-  if (Globals::watchdog_enabled) {
-    parthenon::WatchDog::WatchDog(arg.watchdog_timeout);
+  // Load input stream
+  auto pin = std::make_unique<ParameterInput>();
+  auto inputString = restartReader->GetInputString();
+  std::istringstream is(inputString);
+  pin->LoadFromStream(is);
+  return pin;
+}
+
+ParthenonStatus ParthenonManager::FinishInitEnv_(std::unique_ptr<ParameterInput> pin,
+                                                 RuntimeOptions opts) {
+  opts_ = std::move(opts);
+  pinput = std::move(pin);
+
+  if (opts_.watchdog_timeout) {
+    Globals::watchdog_enabled = true;
+    parthenon::WatchDog::WatchDog(opts_.watchdog_timeout.value());
   }
   // Now that the input is parsed we can pass the info to globals
-  Globals::is_restart = arg.is_restart;
+  Globals::is_restart = opts_.IsRestart();
 
   // Set up the signal handler
   SignalHandler::SignalHandlerInit();
-  if (Globals::my_rank == 0 && arg.wtlim > 0) SignalHandler::SetWallTimeAlarm(arg.wtlim);
-
-  // Populate the ParameterInput object.
-  // If restart, then ParameterInput in the restart file takes precedence.
-  if (arg.is_restart) {
-    // Read input from restart file
-    if (fs::path(arg.restart_filename).extension() == ".rhdf") {
-#ifdef ENABLE_HDF5
-      restartReader = std::make_unique<RestartReaderHDF5>(arg.restart_filename);
-#else // HDF5 disabled
-      PARTHENON_FAIL("Restart functionality is not available because HDF5 is disabled");
-#endif
-    } else if (fs::path(arg.restart_filename).extension() == ".bp" ||
-               // allow user input for /path/to/restart.bp/ (with trailing `/`), e.g.,
-               // from autocomplete
-               (fs::is_directory(arg.restart_filename) &&
-                fs::path(arg.restart_filename).parent_path().extension() == ".bp")) {
-#ifdef PARTHENON_ENABLE_OPENPMD
-      restartReader = std::make_unique<RestartReaderOPMD>(arg.restart_filename);
-#else
-      PARTHENON_FAIL("Trying to restart from OpenPMD file but OpenPMD support was not "
-                     "compiled into Parthenon.");
-#endif // ifdef PARTHENON_ENABLE_OPENPMD
-    } else {
-      PARTHENON_FAIL("Unsupported restart file format.");
-    }
-
-    // Load input stream
-    pinput = std::make_unique<ParameterInput>();
-    auto inputString = restartReader->GetInputString();
-    std::istringstream is(inputString);
-    pinput->LoadFromStream(is);
+  if (Globals::my_rank == 0 && opts_.wall_time_limit > 0) {
+    SignalHandler::SetWallTimeAlarm(opts_.wall_time_limit);
   }
-  // If an input file was provided
-  if (arg.input_filename != nullptr) {
-    // Modify info read from restart file
-    if (arg.is_restart) {
-      IOWrapper infile;
-      infile.Open(arg.input_filename, IOWrapper::FileMode::read);
-      pinput->LoadFromFile(infile);
-      infile.Close();
-
-      // Populate new object for fresh simulation
-    } else {
-      pinput = std::make_unique<ParameterInput>(arg.input_filename);
-    }
-  }
-
-  // Modify based on command line inputs
-  pinput->ModifyFromCmdline(argc, argv);
 
   // Finalize parsing phase - parsers can no longer add parameters
   pinput->FinalizeParsing();
@@ -165,7 +222,7 @@ ParthenonStatus ParthenonManager::ParthenonInitEnv(int argc, char *argv[]) {
       "manual modification or restarting from an output written during analysis, which "
       "is undefined behavior. If you don't know how this was triggered, please contact "
       "the Parthenon developers.");
-  pinput->SetBoolean("parthenon/job", "run_only_analysis", arg.analysis_flag);
+  pinput->SetBoolean("parthenon/job", "run_only_analysis", opts_.analysis);
 
   // Set the global number of ghost zones
   Globals::nghost = pinput->GetOrAddInteger("parthenon/mesh", "nghost", 2,
@@ -217,9 +274,9 @@ void ParthenonManager::ParthenonInitPackagesAndMesh(
   packages.Add(OutputsPackage::Initialize(pinput.get()));
   if (forest_def) {
     pmesh = std::make_unique<Mesh>(pinput.get(), app_input.get(), packages, *forest_def);
-  } else if (!arg.is_restart) {
+  } else if (!opts_.IsRestart()) {
     pmesh =
-        std::make_unique<Mesh>(pinput.get(), app_input.get(), packages, arg.mesh_flag);
+        std::make_unique<Mesh>(pinput.get(), app_input.get(), packages, opts_.mesh_flag);
   } else {
     // Open restart file
     // Read Mesh from restart file and create meshblocks
@@ -252,24 +309,28 @@ void ParthenonManager::ParthenonInitPackagesAndMesh(
     }
   }
 
-  if (arg.mesh_flag) {
+  if (opts_.mesh_flag) {
     ParthenonFinalize();
     exit(0);
   }
 
-  if (arg.param_flag) {
+  if (opts_.params_regex) {
     pinput->SetBoolean("parthenon/job", "output_params_and_exit", true);
-    pinput->SetString("parthenon/job", "output_params_block_regex", arg.params_regex);
+    pinput->SetString("parthenon/job", "output_params_block_regex",
+                      opts_.params_regex.value());
   }
 
-  pmesh->Initialize(!arg.is_restart, pinput.get(), app_input.get());
+  pmesh->Initialize(!opts_.IsRestart(), pinput.get(), app_input.get());
 
-  ChangeRunDir(arg.prundir);
+  if (opts_.run_dir) ChangeRunDir(opts_.run_dir->c_str());
 }
 
 ParthenonStatus ParthenonManager::ParthenonFinalize() {
   pmesh.reset();
-  Kokkos::finalize();
+  if (initialized_kokkos_ && Kokkos::is_initialized()) {
+    Kokkos::finalize();
+    initialized_kokkos_ = false;
+  }
 #ifdef MPI_PARALLEL
   int mpi_finalized;
   PARTHENON_MPI_CHECK(MPI_Finalized(&mpi_finalized));

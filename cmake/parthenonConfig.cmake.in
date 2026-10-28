@@ -50,3 +50,15 @@ endif()
 find_package(Filesystem REQUIRED COMPONENTS Experimental Final)
 
 include("${CMAKE_CURRENT_LIST_DIR}/parthenonTargets.cmake")
+
+set(PARTHENON_ENABLE_PYTHON @PARTHENON_ENABLE_PYTHON@)
+if (PARTHENON_ENABLE_PYTHON)
+  # Python modules are built with parthenon_add_python_module (see
+  # ParthenonPython.cmake), which requires Python and nanobind to be found first.
+  set(PARTHENON_PYTHON_BINDINGS_DIR
+    "@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_DATADIR@/parthenon/python/bindings")
+  set(PARTHENON_PYTHON_PACKAGE_DIR
+    "@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_DATADIR@/parthenon/python/parthenon")
+  set(PARTHENON_PYTHON_INCLUDE_DIR "@CMAKE_INSTALL_PREFIX@/@CMAKE_INSTALL_INCLUDEDIR@/python")
+  include(ParthenonPython)
+endif()

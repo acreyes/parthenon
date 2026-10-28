@@ -261,6 +261,11 @@ class ParameterInput {
   // Finalize the parsing phase - no more parsing allowed (but GetOrAdd/Set still work)
   void FinalizeParsing();
 
+  // Add all parameters from other on top of this one, overriding parameters that
+  // already exist. Like the other parsing methods, it must be called before
+  // FinalizeParsing().
+  void Overlay(const ParameterInput &other);
+
   // === QUERY INTERFACE (parser-agnostic) ===
   std::vector<std::string> GetBlockNames() const;
   std::vector<std::string> GetBlockNamesWithPrefix(const std::string &prefix) const;

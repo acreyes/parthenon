@@ -129,6 +129,20 @@ if (ENABLE_HDF5)
     --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/advection_outflow/parthinput.advection_outflow")
   list(APPEND EXTRA_TEST_LABELS "")
 
+  if (PARTHENON_ENABLE_PYTHON)
+    list(APPEND TEST_DIRS advection_python)
+    list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
+    list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/advection/advection-example-py \
+      --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/advection_outflow/parthinput.advection_outflow")
+    list(APPEND EXTRA_TEST_LABELS "python")
+
+    list(APPEND TEST_DIRS advection_python_mesh)
+    list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
+    list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/advection/advection-example-py \
+      --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/advection_outflow/parthinput.advection_outflow")
+    list(APPEND EXTRA_TEST_LABELS "python")
+  endif()
+
   list(APPEND TEST_DIRS advection_undersubscribed)
   list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
   list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/advection/advection-example \

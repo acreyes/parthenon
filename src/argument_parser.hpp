@@ -1,6 +1,6 @@
 //========================================================================================
 // Parthenon performance portable AMR framework
-// Copyright(C) 2021-2025 The Parthenon collaboration
+// Copyright(C) 2021-2026 The Parthenon collaboration
 // Licensed under the 3-clause BSD License, see LICENSE file for details
 //========================================================================================
 // (C) (or copyright) 2021-2025. Triad National Security, LLC. All rights reserved.
@@ -20,10 +20,12 @@
 
 #include <cstdio>
 #include <iostream>
+#include <optional>
 #include <string>
 
 #include "defs.hpp"
 #include "globals.hpp"
+#include "runtime_options.hpp"
 #include "utils/utils.hpp"
 
 namespace parthenon {
@@ -55,40 +57,36 @@ class ArgParse {
           break;
         case 'r': // -r <restart_file>
           invalid = invalid_arg();
-          is_restart = true;
-          restart_filename = argv[++i];
+          opts.restart_filename = argv[++i];
           break;
         case 'a': // -a <restart_file>
           invalid = invalid_arg();
-          is_restart = true;
-          analysis_flag = true;
-          restart_filename = argv[++i];
+          opts.analysis = true;
+          opts.restart_filename = argv[++i];
           break;
         case 'd': // -d <run_directory>
           invalid = invalid_arg();
-          prundir = argv[++i];
+          opts.run_dir = argv[++i];
           break;
         case 'p':
-          param_flag = 1;
           if ((i + 1 == argc) || (argv[i + 1][0] == '-')) {
-            params_regex = default_params_regex_;
+            opts.params_regex = default_params_regex;
           } else {
-            params_regex = argv[++i];
+            opts.params_regex = argv[++i];
           }
           break;
         case 'm': // -m <nproc>
           invalid = invalid_arg();
-          mesh_flag = static_cast<int>(std::strtol(argv[++i], nullptr, 10));
+          opts.mesh_flag = static_cast<int>(std::strtol(argv[++i], nullptr, 10));
           break;
         case 't': // -t <hh:mm:ss>
           int wth, wtm, wts;
           std::sscanf(argv[++i], "%d:%d:%d", &wth, &wtm, &wts);
-          wtlim = wth * 3600 + wtm * 60 + wts;
+          opts.wall_time_limit = wth * 3600 + wtm * 60 + wts;
           break;
         case 'w': // -w <seconds>
           invalid = invalid_arg();
-          watchdog_enabled = true;
-          watchdog_timeout = static_cast<int>(std::strtol(argv[++i], nullptr, 10));
+          opts.watchdog_timeout = static_cast<int>(std::strtol(argv[++i], nullptr, 10));
           break;
         case 'c':
           if (Globals::my_rank == 0) ShowConfig();
@@ -131,7 +129,7 @@ class ArgParse {
       } // else if argv[i] not of form "-?" ignore it here (tested in ModifyFromCmdline)
     }
 
-    if (restart_filename == nullptr && input_filename == nullptr) {
+    if (!opts.restart_filename && !input_filename) {
       // no input file is given
       std::cout << "### FATAL ERROR in main" << std::endl
                 << "No input file or restart file is specified." << std::endl;
@@ -140,21 +138,10 @@ class ArgParse {
     return ArgStatus::ok;
   }
 
-  char *input_filename = nullptr;
-  char *restart_filename = nullptr;
-  char *prundir = nullptr;
-  char *params_regex = nullptr;
-  bool analysis_flag = false;
-  bool is_restart = false;
-  bool watchdog_enabled = false;
-  int watchdog_timeout = 0;
-  int param_flag = 0;
-  int mesh_flag = 0;
-  int wtlim = 0;
-  int exit_flag = 0;
+  std::optional<std::string> input_filename;
+  RuntimeOptions opts;
 
- private:
-  char default_params_regex_[64] = "(.*)"; // wildcard
+  static constexpr const char *default_params_regex = "(.*)"; // wildcard
 };
 
 } // namespace parthenon

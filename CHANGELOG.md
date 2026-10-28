@@ -5,10 +5,10 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
-
+- [[PR XXXX]](https://github.com/parthenon-hpc-lab/parthenon/pull/XXXX) Add optional nanobind Python bindings (`PARTHENON_ENABLE_PYTHON`) built into application Python packages with `parthenon_add_python_module` (with a `parthenon` Python package including an argparse command line, and optional type stubs), a Python version of the advection example, and `ParthenonInitEnv(pin, RuntimeOptions)` to initialize from a populated `ParameterInput`
 
 ### Changed (changing behavior/API/variables/...)
-
+- [[PR XXXX]](https://github.com/parthenon-hpc-lab/parthenon/pull/XXXX) `ParthenonInitEnv` does not initialize Kokkos if it is already initialized, and `ParthenonFinalize` only finalizes Kokkos if Parthenon initialized it
 
 ### Fixed (not changing behavior/API/variables/...)
 

@@ -895,6 +895,26 @@ void ParameterInput::AddParsedParameter(const std::string &block, const std::str
 void ParameterInput::FinalizeParsing() { parsing_finalized_ = true; }
 
 //----------------------------------------------------------------------------------------
+//! \fn void ParameterInput::Overlay(const ParameterInput &other)
+//  \brief Add all parameters in other to this one, overriding existing parameters.
+//  Parameters keep their original string representation when available.
+
+void ParameterInput::Overlay(const ParameterInput &other) {
+  PARTHENON_REQUIRE_THROWS(!parsing_finalized_,
+                           "Can't overlay parameters after parsing is resolved.");
+  for (const auto &block : other.param_storage_) {
+    for (const auto &param : block.params) {
+      if (param.original_string.has_value()) {
+        AddParameter_(block.name, param.name, param.original_string.value(),
+                      param.comment);
+      } else {
+        AddParameter_(block.name, param.name, param.value, param.comment);
+      }
+    }
+  }
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn std::vector<std::string> ParameterInput::GetBlockNames()
 //  \brief Return all block names in the input
 
