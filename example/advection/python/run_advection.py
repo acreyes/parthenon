@@ -56,10 +56,9 @@ from advection import parthenon
 
 ParameterValue = Union[bool, int, float, str]
 
-# The parameters of parthinput.advection, as {block: {name: value}}. Values are stored
-# with their Python type, which must match the type the C++ code reads them as (e.g., 1.0
-# for a Real; 1 can only be read as an integer). Strings are parsed like values in an
-# input file.
+# The parameters of parthinput.advection, as {block: {name: value}}. Values are converted
+# to strings and parsed like values in an input file, so they are read as whatever type
+# the C++ code asks for (e.g., 1 can be read as an integer or a Real).
 ADVECTION_INPUT: dict[str, dict[str, ParameterValue]] = {
     "parthenon/job": {"problem_id": "advection"},
     "parthenon/mesh": {

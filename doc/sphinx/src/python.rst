@@ -114,8 +114,10 @@ configuration and exits with status 0 (the C++ executables exit with an error st
 An application that sets its parameters in Python can make the input file optional with
 ``parse_args(argv, parser, require_input=False)``, and pass its parameters to
 ``args.parameter_input(base)``, which reads the input file (if any) and applies the
-overrides on top of ``base``. Parameters set in Python keep their Python type, which must
-match the type C++ reads them as (e.g., ``1.0`` for a ``Real``).
+overrides on top of ``base``. Parameters set in Python (``bool``, ``int``, ``float``, or
+``str`` values) are converted to strings and parsed like values in an input file, so they
+can be read as any type that the string converts to (e.g., ``1`` can be read as an
+integer or a ``Real``).
 
 Running with MPI
 ----------------

@@ -132,6 +132,24 @@ class TestParseArgs(unittest.TestCase):
         self.assertEqual(pin.get_string_repr("a", "b"), "2")
         self.assertEqual(pin.get_string_repr("a", "c"), "3")
 
+    def test_python_values(self):
+        # Python values are parsed like values in an input file, so they can be read as
+        # any type their string converts to (but, as for an input file, only one type per
+        # parameter, which is set by the first read)
+        pin = parthenon.ParameterInput()
+        pin.add("a", "int_as_real", 1)
+        pin.add("a", "int", 1)
+        pin.add("a", "float", 0.1)
+        pin.add("a", "str", "2")
+        pin["a/bool"] = True
+        self.assertEqual(pin.get_string_repr("a", "int"), "1")
+        self.assertEqual(pin.get_string_repr("a", "float"), "0.1")
+        self.assertEqual(pin.get_string_repr("a", "bool"), "true")
+        self.assertEqual(pin.GetReal("a", "int_as_real"), 1.0)
+        self.assertEqual(pin.GetInteger("a", "int"), 1)
+        self.assertEqual(pin.GetReal("a", "float"), 0.1)
+        self.assertEqual(pin.GetReal("a", "str"), 2.0)
+        self.assertIs(pin.GetBoolean("a", "bool"), True)
 
 class TestPackage(unittest.TestCase):
     def test_reexports_bindings(self):

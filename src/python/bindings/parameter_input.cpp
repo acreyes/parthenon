@@ -29,15 +29,24 @@ namespace parthenon {
 namespace python {
 
 namespace {
-// Values that can be added from Python. Strings are added unresolved, exactly like
-// values read from an input file, so they can later be read as any type.
+// Values that can be added from Python. They are all added as unresolved strings, exactly
+// like values read from an input file, so that they can be read as any type that the
+// string can be converted to (e.g., 1 can be read as an integer or a Real), as with an
+// input file.
 using PyParamValue = std::variant<bool, int, Real, std::string>;
 
 ParamValue ToParamValue(const PyParamValue &value) {
   if (const auto *str = std::get_if<std::string>(&value)) {
     return UnresolvedString(*str);
   }
-  return std::visit([](const auto &v) -> ParamValue { return v; }, value);
+  if (const auto *b = std::get_if<bool>(&value)) {
+    return UnresolvedString(*b ? "true" : "false");
+  }
+  if (const auto *i = std::get_if<int>(&value)) {
+    return UnresolvedString(std::to_string(*i));
+  }
+  // Python's str of a float is the shortest string that converts back to the same value
+  return UnresolvedString(nb::str(nb::float_(std::get<Real>(value))).c_str());
 }
 
 std::pair<std::string, std::string> SplitPath(const std::string &path) {
