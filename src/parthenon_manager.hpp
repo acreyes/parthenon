@@ -30,6 +30,7 @@
 #include "mesh/mesh.hpp"
 #include "outputs/restart.hpp"
 #include "parameter_input.hpp"
+#include "runtime_options.hpp"
 #include "utils/error_checking.hpp"
 #include "utils/utils.hpp"
 
@@ -40,7 +41,14 @@ enum class ParthenonStatus { ok, complete, error };
 class ParthenonManager {
  public:
   ParthenonManager() { app_input.reset(new ApplicationInput()); }
+  // Initialize from command line arguments. Parses the arguments into RuntimeOptions,
+  // reads the input (and/or restart) file, applies command line overrides, and then
+  // proceeds as ParthenonInitEnv(pin, opts).
   ParthenonStatus ParthenonInitEnv(int argc, char *argv[]);
+  // Initialize from an already populated ParameterInput. On restart, the input stored
+  // in the restart file is loaded first and pin is overlaid on top of it.
+  ParthenonStatus ParthenonInitEnv(std::unique_ptr<ParameterInput> pin,
+                                   RuntimeOptions opts);
   void
   ParthenonInitPackagesAndMesh(std::optional<forest::ForestDefinition> forest_def = {});
   ParthenonStatus ParthenonFinalize();
@@ -58,9 +66,15 @@ class ParthenonManager {
   std::unique_ptr<ApplicationInput> app_input;
 
  private:
-  ArgParse arg;
+  RuntimeOptions opts_;
   bool called_init_env_ = false;
+  bool initialized_kokkos_ = false;
   bool called_init_packages_and_mesh_ = false;
+
+  ParthenonStatus InitMPIAndKokkos_(int argc, char *argv[]);
+  std::unique_ptr<ParameterInput> OpenRestart_(const std::string &restart_filename);
+  ParthenonStatus FinishInitEnv_(std::unique_ptr<ParameterInput> pin,
+                                 RuntimeOptions opts);
 
   template <typename T>
   void ReadSwarmVars_(const SP_Swarm &pswarm, const BlockList_t &block_list,

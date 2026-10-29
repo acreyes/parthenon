@@ -78,6 +78,7 @@ endif()
 
 option(PARTHENON_ENABLE_FFT "Enable Parthenon FFT functionality" OFF)
 option(PARTHENON_USE_SYSTEM_HEFFTE "Use system-installed heFFTe instead of fetching it" OFF)
+option(PARTHENON_ENABLE_PYTHON "Build the nanobind Python bindings" OFF)
 
 # Check if we are using Parthenon as a subproject
 set(_parthenon_is_toplevel OFF)
@@ -310,6 +311,11 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 
+if (PARTHENON_ENABLE_PYTHON)
+  # Parthenon and Kokkos are linked into the (shared) Python extension modules
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if (NOT TARGET Kokkos::kokkos)
   if (PARTHENON_IMPORT_KOKKOS)
     find_package(Kokkos 4)
@@ -534,6 +540,22 @@ add_subdirectory(src)
 if (PARTHENON_ENABLE_FFT)
   target_link_libraries(parthenon PRIVATE Heffte::Heffte)
   target_compile_definitions(parthenon PUBLIC PARTHENON_ENABLE_FFT)
+endif()
+
+if (PARTHENON_ENABLE_PYTHON)
+  find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)
+  if (PARTHENON_USE_SYSTEM_PACKAGES)
+    find_package(nanobind CONFIG QUIET)
+  endif()
+  if (NOT nanobind_FOUND)
+    if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind/CMakeLists.txt)
+      message(FATAL_ERROR "Could not find nanobind source. Consider running "
+        "`git submodule update --init --recursive -- external/nanobind`.")
+    endif()
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/nanobind nanobind)
+  endif()
+  include(cmake/ParthenonPython.cmake)
+  add_subdirectory(src/python)
 endif()
 
 add_subdirectory(example)

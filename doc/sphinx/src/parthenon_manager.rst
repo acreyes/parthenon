@@ -73,5 +73,53 @@ required AMR, SMR, or no refinement at all. A common use-case is:
 
   pman.ParthenonInitPackagesAndMesh();
 
+Initializing from a ``ParameterInput``
+--------------------------------------
+
+Instead of parsing the command line and reading an input file, an
+application can build the ``ParameterInput`` itself (e.g., from another
+input format or from Python) and pass it to
+
+.. code:: cpp
+
+   ParthenonStatus ParthenonManager::ParthenonInitEnv(std::unique_ptr<ParameterInput> pin,
+                                                      RuntimeOptions opts);
+
+``RuntimeOptions`` (``runtime_options.hpp``) holds the settings that otherwise come
+from the command line flags, other than the input file:
+
+=====================  ===========  ==========================================
+Member                 Flag         Meaning
+=====================  ===========  ==========================================
+``restart_filename``   ``-r``       Restart from this file
+``analysis``           ``-a``       Only analyze ``restart_filename``
+``run_dir``            ``-d``       Run directory
+``params_regex``       ``-p``       Report parameters of matching blocks and quit
+``mesh_flag``          ``-m``       Output the mesh structure and quit
+``wall_time_limit``    ``-t``       Wall time limit in seconds
+``watchdog_timeout``   ``-w``       Watchdog timeout in seconds
+``kokkos_args``                     Arguments passed to ``Kokkos::initialize``
+=====================  ===========  ==========================================
+
+MPI and Kokkos are only initialized if they are not already initialized (and
+``ParthenonFinalize`` only finalizes Kokkos if Parthenon initialized it). On a restart,
+the parameters stored in the restart file are loaded first and ``pin`` is overlaid on
+top of them (``ParameterInput::Overlay``), just like an input file passed together with
+``-r``. ``ParthenonInitEnv(argc, argv)`` is implemented on top of this overload: it
+converts the command line into ``RuntimeOptions`` and a ``ParameterInput`` read from the
+input and/or restart file, with command line overrides applied.
+
+.. code:: cpp
+
+  auto pin = std::make_unique<parthenon::ParameterInput>();
+  std::istringstream input("<parthenon/mesh>\nnx1 = 64\n...");
+  pin->LoadFromStream(input);
+
+  parthenon::RuntimeOptions opts;
+  opts.run_dir = "output";
+  auto manager_status = pman.ParthenonInitEnv(std::move(pin), opts);
+
+See :ref:`python` for using this from Python.
+
 .. note::
     This file was made in part with generative AI.

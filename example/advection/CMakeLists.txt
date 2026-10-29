@@ -12,16 +12,26 @@
 #=========================================================================================
 
 get_property(DRIVER_LIST GLOBAL PROPERTY DRIVERS_USED_IN_TESTS)
-if( "advection-example" IN_LIST DRIVER_LIST OR NOT PARTHENON_DISABLE_EXAMPLES)
-  add_executable(
-      advection-example
+if( "advection-example" IN_LIST DRIVER_LIST OR "advection-example-py" IN_LIST DRIVER_LIST
+    OR NOT PARTHENON_DISABLE_EXAMPLES)
+  # The package, driver, and app inputs are shared by the C++ executable and the Python
+  # module
+  add_library(
+      advection-lib STATIC
           advection_driver.cpp
           advection_driver.hpp
           advection_package.cpp
           advection_package.hpp
-          main.cpp
           parthenon_app_inputs.cpp
   )
-  target_link_libraries(advection-example PRIVATE Parthenon::parthenon)
+  target_link_libraries(advection-lib PUBLIC Parthenon::parthenon)
+  lint_target(advection-lib)
+
+  add_executable(advection-example main.cpp)
+  target_link_libraries(advection-example PRIVATE advection-lib)
   lint_target(advection-example)
+
+  if (PARTHENON_ENABLE_PYTHON)
+    add_subdirectory(python)
+  endif()
 endif()
