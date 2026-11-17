@@ -41,6 +41,14 @@ void BoundaryFunctionMaps::Register(const Metadata &m) {
   }
 }
 
+void FluxCorrectionFunctionMaps::Register(const Metadata &m) {
+  if (m.HasFluxCorrectionOps() &&
+      funcs_to_ids.count(m.GetFluxCorrectionFunctions()) == 0) {
+    const std::size_t id = funcs_to_ids.size();
+    funcs_to_ids[m.GetFluxCorrectionFunctions()] = id;
+  }
+}
+
 void RefinementFunctionMaps::Register(const Metadata &m, std::string varname) {
   if (m.HasRefinementOps()) {
     const auto &funcs = m.GetRefinementFunctions();
@@ -335,6 +343,7 @@ bool StateDescriptor::AddFieldImpl_(const VarID &vid, const Metadata &m_in,
     metadataMap_.insert({vid, m});
     refinementFuncMaps_.Register(m, vid.label());
     boundaryFuncMaps_.Register(m);
+    fluxCorrectionFuncMaps_.Register(m);
     allocControllerReverseMap_.insert({vid, control_vid});
     // Add this variable to the set of unique IDs at the
     // earliest possible time

@@ -168,9 +168,12 @@ inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
               if (!v->IsSet(Metadata::FillGhost)) continue;
             } else if constexpr (flx_bound) {
               if (!v->IsSet(Metadata::Flux)) continue;
-              // Check if this boundary requires flux correction
+              // Check if this boundary requires flux correction: across levels always,
+              // between blocks on the same level only for variables with a registered
+              // flux-correction combine op
               if (nb.loc.level() - (bound == BoundaryType::flxcor_recv) !=
-                  pmb->loc.level() - (bound == BoundaryType::flxcor_send))
+                      pmb->loc.level() - (bound == BoundaryType::flxcor_send) &&
+                  (nb.loc.level() != pmb->loc.level() || !v->HasFluxCorrectionOps()))
                 continue;
               bool correct = false;
               if (nb.offsets.IsFace() && v->IsSet(Metadata::Face)) correct = true;
