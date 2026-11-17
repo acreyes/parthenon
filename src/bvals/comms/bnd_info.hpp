@@ -76,6 +76,14 @@ struct BndInfo {
   ParArrayND<Real, VariableState> var; // data variable used for comms
   Coordinates_t coords;
 
+  // Which exchange this is, for registered boundary ops: index of the local block in the
+  // MeshData (the sender in send caches, the receiver in receive caches), the gids of
+  // both ends and the offset of the neighbor in the local block's frame.
+  int block = -1;
+  int send_gid = -1;
+  int recv_gid = -1;
+  CellCentOffsets offsets{0, 0, 0};
+
   KOKKOS_DEFAULTED_FUNCTION
   BndInfo() = default;
   KOKKOS_DEFAULTED_FUNCTION
@@ -172,6 +180,29 @@ struct ProResCache_t {
   }
 };
 
+// Buckets of the boundaries of one cache that use a registered boundary op (pack in send
+// caches, unpack in receive caches), indexed by StateDescriptor::BoundaryFuncID, and the
+// remaining boundaries that take the default copy. Empty (nuser == 0) unless a variable
+// in the exchange registered ops, in which case the default kernels run over the
+// default subset only.
+struct BndOpsCache_t {
+  std::size_t nuser = 0;
+  std::size_t ndefault = 0;
+  ParArray1D<std::size_t> default_subset{};
+  std::vector<std::size_t> buffer_subset_sizes;
+  ParArray2D<std::size_t> buffer_subsets{};
+  ParArray2D<std::size_t>::host_mirror_type buffer_subsets_h{};
+
+  void clear() {
+    nuser = 0;
+    ndefault = 0;
+    default_subset = ParArray1D<std::size_t>{};
+    buffer_subset_sizes.clear();
+    buffer_subsets = ParArray2D<std::size_t>{};
+    buffer_subsets_h = ParArray2D<std::size_t>::host_mirror_type{};
+  }
+};
+
 // This is just a struct to cleanly hold all of the information it is useful to cache
 // for the block boundary communication routines. A copy of it is contained in MeshData.
 struct BvarsSubCache_t {
@@ -185,12 +216,16 @@ struct BvarsSubCache_t {
     bnd_info = BndInfoArr_t{};
     bnd_info_h = BndInfoArr_t::host_mirror_type{};
     prores_cache.clear();
+    bnd_ops.clear();
   }
 
   bool RequiresReinitialize(Mesh *pmesh) const;
 
   // Stores prolongation and restriction information for boundary regions
   ProResCache_t prores_cache;
+
+  // Buckets of boundaries handled by registered boundary ops
+  BndOpsCache_t bnd_ops;
 
   std::vector<std::size_t> idx_vec;
   std::vector<CommBuffer<buf_pool_t<Real>::owner_t> *> buf_vec;

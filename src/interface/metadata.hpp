@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "basic_types.hpp"
+#include "bvals/comms/bnd_ops.hpp"
 #include "prolong_restrict/pr_ops.hpp"
 #include "prolong_restrict/prolong_restrict.hpp"
 #include "utils/error_checking.hpp"
@@ -579,6 +580,24 @@ class Metadata {
     }
   }
 
+  // Registered boundary ops. UnpackOp::Unpack replaces the default ghost-zone copy in
+  // SetBounds and PackOp::Pack the default buffer fill in SendBoundBufs, for every
+  // boundary buffer of this variable (not its flux correction). Either may be
+  // boundary_ops::DefaultUnpack / DefaultPack to keep the default copy on that side.
+  // Each op is called once per bucket, i.e. with all boundaries of the exchange that use
+  // this op set, in ascending (block index in the MeshData, variable label, neighbor
+  // offset index, neighbor gid) order.
+  const BoundaryFunctions_t &GetBoundaryFunctions() const { return boundary_funcs_; }
+  bool HasBoundaryOps() const { return !boundary_funcs_.label().empty(); }
+  template <class UnpackOp, class PackOp = boundary_ops::DefaultPack>
+  void RegisterBoundaryOps() {
+    PARTHENON_REQUIRE_THROWS(IsSet(FillGhost),
+                             "Variable must be FillGhost to accept custom boundary ops");
+    boundary_funcs_ = BoundaryFunctions_t::RegisterOps<UnpackOp, PackOp>();
+    PARTHENON_REQUIRE_THROWS(boundary_funcs_.HasPack() || boundary_funcs_.HasUnpack(),
+                             "At least one of the boundary ops must be non-default");
+  }
+
   // Operators
   bool HasSameFlags(const Metadata &b) const;
 
@@ -620,6 +639,7 @@ class Metadata {
  private:
   /// the attribute flags that are set for the class
   refinement::RefinementFunctions_t refinement_funcs_;
+  BoundaryFunctions_t boundary_funcs_;
   std::vector<bool> bits_;
   std::vector<int> shape_ = {1};
   std::vector<std::string> component_labels_ = {};

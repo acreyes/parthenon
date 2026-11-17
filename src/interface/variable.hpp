@@ -112,6 +112,12 @@ class Variable {
     return m_.GetRefinementFunctions();
   }
 
+  /// Registered boundary ops owned in metadata
+  inline bool HasBoundaryOps() const { return m_.HasBoundaryOps(); }
+  inline const BoundaryFunctions_t &GetBoundaryFunctions() const {
+    return m_.GetBoundaryFunctions();
+  }
+
   /// Get Sparse ID (InvalidSparseID if not sparse)
   inline int GetSparseID() const { return IsSparse() ? sparse_id_ : InvalidSparseID; }
 
