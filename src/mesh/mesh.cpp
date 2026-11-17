@@ -683,6 +683,12 @@ void Mesh::BuildTagMapAndBoundaryBuffers() {
 
   tag_map.ResolveMap();
 
+  // Provider lanes: neighbor lists and tag maps (blocks may have changed)
+  for (auto &[lane, provider] : lane_providers_) {
+    SetLaneNeighbors_(lane);
+    BuildLaneTagMap_(lane);
+  }
+
   // Create send/recv MPI_Requests for swarms
   for (int i = 0; i < nmb; ++i) {
     auto &pmb = block_list[i];
@@ -1110,7 +1116,8 @@ void Mesh::SetupMPIComms() {
     if (metadata.IsSet(Metadata::FillGhost) || metadata.IsSet(Metadata::Independent) ||
         metadata.IsSet(Metadata::ForceRemeshComm) ||
         metadata.IsSet(Metadata::GMGProlongate) ||
-        metadata.IsSet(Metadata::GMGRestrict) || metadata.IsSet(Metadata::Flux)) {
+        metadata.IsSet(Metadata::GMGRestrict) || metadata.IsSet(Metadata::Flux) ||
+        metadata.IsSet(Metadata::Lane)) {
       MPI_Comm mpi_comm;
       PARTHENON_MPI_CHECK(MPI_Comm_dup(MPI_COMM_WORLD, &mpi_comm));
       const auto ret = mpi_comm_map_.insert({pair.first.label(), mpi_comm});
@@ -1338,6 +1345,8 @@ void Mesh::BuildAndRegisterCommBuffers_() {
   // partition here. We shouldn't have to, but I don't know how to fix
   // it without a refactor.
   BuildBoundaryBuffers(mesh_data.Add("base", GetBasePartition()));
+  if (!lane_providers_.empty())
+    BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()));
   if (do_coalesced_comms) RegisterCoalescedComms(this);
 
   if (multigrid) { // But... multigrid is sufficiently hairy that I'm

@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "bnd_info.hpp"
 #include "bvals_utils.hpp"
@@ -37,6 +38,31 @@ TagMap::rank_pair_t TagMap::MakeChannelPair(const MeshBlock *pmb,
   BlockGeometricElementId bgei_me{pmb->gid, location_idx_me};
   BlockGeometricElementId bgei_nb{nb.gid, location_idx_nb};
   return UnorderedPair<BlockGeometricElementId>(bgei_me, bgei_nb);
+}
+
+TagMap::rank_pair_t TagMap::MakeLaneChannelPair(const MeshBlock *pmb,
+                                                const NeighborBlock &nb) {
+  BlockGeometricElementId bgei_me{pmb->gid, nb.lane_channel};
+  BlockGeometricElementId bgei_nb{nb.gid, nb.lane_nb_channel};
+  return UnorderedPair<BlockGeometricElementId>(bgei_me, bgei_nb);
+}
+
+void TagMap::AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBlock> &nbs,
+                              int comm_lanes_per_pair) {
+  for (const auto &nb : nbs) {
+    auto &pair_map = map_[nb.rank];
+    for (int comm_lane = 0; comm_lane < comm_lanes_per_pair; ++comm_lane)
+      pair_map[std::make_pair(MakeLaneChannelPair(pmb, nb), comm_lane)] = -1;
+  }
+}
+
+int TagMap::GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb,
+                       const int comm_lane) {
+  auto &pair_map = map_[nb.rank];
+  auto key = std::make_pair(MakeLaneChannelPair(pmb, nb), comm_lane);
+  PARTHENON_REQUIRE(pair_map.count(key) == 1,
+                    "Trying to get tag for lane channel that hasn't been entered.\n");
+  return pair_map[key];
 }
 
 template <BoundaryType BOUND>

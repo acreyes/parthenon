@@ -122,6 +122,8 @@ class Variable {
   inline const FluxCorrectionFunctions_t &GetFluxCorrectionFunctions() const {
     return m_.GetFluxCorrectionFunctions();
   }
+  /// Provider lane of a Metadata::Lane variable, -1 otherwise
+  inline int GetLane() const { return m_.GetLane(); }
 
   /// Get Sparse ID (InvalidSparseID if not sparse)
   inline int GetSparseID() const { return IsSparse() ? sparse_id_ : InvalidSparseID; }

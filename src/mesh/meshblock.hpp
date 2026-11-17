@@ -204,6 +204,18 @@ class MeshBlock : public std::enable_shared_from_this<MeshBlock> {
   const std::vector<NeighborBlock> &GetGMGSelfNeighbors() const {
     return gmg_self_neighbors;
   }
+  // Neighbors of this block on a provider lane (see Mesh::RegisterNeighborProvider),
+  // sorted by (channel on this block, gid, channel on the neighbor); empty if the lane
+  // has no provider
+  const std::vector<NeighborBlock> &GetLaneNeighbors(int lane) const {
+    static const std::vector<NeighborBlock> none;
+    return lane >= 0 && lane < static_cast<int>(lane_neighbors.size())
+               ? lane_neighbors[lane]
+               : none;
+  }
+  const std::vector<NeighborBlock> &GetLaneNeighbors(LaneId lane) const {
+    return GetLaneNeighbors(static_cast<int>(lane));
+  }
 
   bool HasCoarserNeighbors() const { return has_coarser_neighbors_; }
 
@@ -513,6 +525,8 @@ class MeshBlock : public std::enable_shared_from_this<MeshBlock> {
   std::vector<NeighborBlock> gmg_same_neighbors;
   std::vector<NeighborBlock> gmg_finer_neighbors;
   std::vector<NeighborBlock> gmg_self_neighbors;
+  // Indexed by lane id, set by Mesh::RebuildLane
+  std::vector<std::vector<NeighborBlock>> lane_neighbors;
 
   bool has_coarser_neighbors_ = false;
 };

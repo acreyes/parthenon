@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 #ifndef BASIC_TYPES_HPP_
 #define BASIC_TYPES_HPP_
 
@@ -68,7 +69,7 @@ enum class RefinementOp_t { Prolongation, Restriction, None };
 enum class CellLevel : int { coarse = -1, same = 0, fine = 1 };
 // JMM: Not clear this is the best place for this but it minimizes
 // circular dependency nonsense.
-constexpr int NUM_BNDRY_TYPES = 10;
+constexpr int NUM_BNDRY_TYPES = 13;
 enum class BoundaryType : int {
   local,
   nonlocal,
@@ -79,11 +80,26 @@ enum class BoundaryType : int {
   gmg_restrict_send,
   gmg_restrict_recv,
   gmg_prolongate_send,
-  gmg_prolongate_recv
+  gmg_prolongate_recv,
+  // Provider lanes (Mesh::RegisterNeighborProvider): exchanges of Metadata::Lane
+  // variables between the neighbors a user provider lists, and their flux combine
+  lane,
+  lane_flxcor_send,
+  lane_flxcor_recv
 };
+
+// Index of a provider lane. Codes define their lanes as small non-negative ids, e.g.
+// `constexpr parthenon::LaneId my_lane{0};`
+enum class LaneId : int {};
+
+inline constexpr bool IsLaneBoundary(BoundaryType btype) {
+  return btype == BoundaryType::lane || btype == BoundaryType::lane_flxcor_send ||
+         btype == BoundaryType::lane_flxcor_recv;
+}
 
 inline constexpr bool IsSender(BoundaryType btype) {
   if (btype == BoundaryType::flxcor_recv) return false;
+  if (btype == BoundaryType::lane_flxcor_recv) return false;
   if (btype == BoundaryType::gmg_restrict_recv) return false;
   if (btype == BoundaryType::gmg_prolongate_recv) return false;
   return true;
@@ -91,6 +107,7 @@ inline constexpr bool IsSender(BoundaryType btype) {
 
 inline constexpr bool IsReceiver(BoundaryType btype) {
   if (btype == BoundaryType::flxcor_send) return false;
+  if (btype == BoundaryType::lane_flxcor_send) return false;
   if (btype == BoundaryType::gmg_restrict_send) return false;
   if (btype == BoundaryType::gmg_prolongate_send) return false;
   return true;
@@ -98,6 +115,7 @@ inline constexpr bool IsReceiver(BoundaryType btype) {
 
 inline constexpr BoundaryType GetAssociatedReceiver(BoundaryType btype) {
   if (btype == BoundaryType::flxcor_send) return BoundaryType::flxcor_recv;
+  if (btype == BoundaryType::lane_flxcor_send) return BoundaryType::lane_flxcor_recv;
   if (btype == BoundaryType::gmg_restrict_send) return BoundaryType::gmg_restrict_recv;
   if (btype == BoundaryType::gmg_prolongate_send)
     return BoundaryType::gmg_prolongate_recv;
@@ -106,6 +124,7 @@ inline constexpr BoundaryType GetAssociatedReceiver(BoundaryType btype) {
 
 inline constexpr BoundaryType GetAssociatedSender(BoundaryType btype) {
   if (btype == BoundaryType::flxcor_recv) return BoundaryType::flxcor_send;
+  if (btype == BoundaryType::lane_flxcor_recv) return BoundaryType::lane_flxcor_send;
   if (btype == BoundaryType::gmg_restrict_recv) return BoundaryType::gmg_restrict_send;
   if (btype == BoundaryType::gmg_prolongate_recv)
     return BoundaryType::gmg_prolongate_send;

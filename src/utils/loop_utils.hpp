@@ -152,8 +152,26 @@ inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
             }
           }
         }
+      } else if constexpr (bound == BoundaryType::lane) {
+        // Lane variables with registered boundary ops, between their lane's neighbors
+        if (v->IsSet(Metadata::Lane) && !v->IsSet(Metadata::Flux) &&
+            v->HasBoundaryOps()) {
+          for (auto &nb : pmb->GetLaneNeighbors(v->GetLane())) {
+            if (func_caller(func, pmb, rc, nb, v) == LoopControl::break_out) return;
+          }
+        }
+      } else if constexpr (IsLaneBoundary(bound)) {
+        // Fluxes of lane variables with a registered combine op
+        if (v->IsSet(Metadata::Lane) && v->IsSet(Metadata::Flux) &&
+            v->HasFluxCorrectionOps()) {
+          for (auto &nb : pmb->GetLaneNeighbors(v->GetLane())) {
+            if (func_caller(func, pmb, rc, nb, v) == LoopControl::break_out) return;
+          }
+        }
       } else {
-        if (v->IsSet(Metadata::FillGhost) || v->IsSet(Metadata::Flux)) {
+        // Lane variables are never FillGhost; their fluxes go only on their lane
+        if (v->IsSet(Metadata::FillGhost) ||
+            (v->IsSet(Metadata::Flux) && !v->IsSet(Metadata::Lane))) {
           [[maybe_unused]] constexpr bool flx_bound =
               bound == BoundaryType::flxcor_send || bound == BoundaryType::flxcor_recv;
           const auto &neighbors = pmb->GetNeighbors();

@@ -23,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "basic_types.hpp"
 
@@ -94,6 +95,8 @@ class TagMap {
   // corresponding to the two blocks geometric elements that coincide. This serves as a
   // unique key defining the two-way communication channel between these elements
   rank_pair_t MakeChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
+  // The same for a provider-lane channel, from the channel ids at both ends
+  rank_pair_t MakeLaneChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
 
  public:
   void clear() { map_.clear(); }
@@ -111,6 +114,12 @@ class TagMap {
   // After the map has been resolved, get the tag for a particular MeshBlock NeighborBlock
   // pair
   int GetTag(const MeshBlock *pmb, const NeighborBlock &nb, int lane = 0);
+
+  // Provider lanes keep one TagMap per lane, filled from the lane neighbors of the local
+  // blocks (Mesh::RebuildLane), then resolved as above
+  void AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBlock> &nbs,
+                        int comm_lanes_per_pair = 1);
+  int GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb, int comm_lane = 0);
 };
 } // namespace parthenon
 
