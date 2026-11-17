@@ -319,9 +319,9 @@ lane buffers.
         nbs.push_back({/*gid=*/nb_gid, /*channel_me=*/c, /*channel_nb=*/c_nb});
       });
 
-  // Task list, on a MeshData holding only variables of my_lane
-  auto ex = AddLaneExchangeTasks(dep, tl, md_lane, my_lane);
-  auto fx = AddLaneFluxCorrectionTasks(dep, tl, md_lane_flux, my_lane);
+  // Task list; md may also hold other lanes' and ordinary variables
+  auto ex = AddLaneExchangeTasks(dep, tl, md, my_lane);
+  auto fx = AddLaneFluxCorrectionTasks(dep, tl, md, my_lane);
 
   // After the downstream code changed the lane graph, between exchanges
   pmesh->RebuildLane(my_lane);
@@ -352,33 +352,54 @@ lane buffers.
   channel are consecutive and in ascending sender gid.
 - **Tasks.** ``AddLaneExchangeTasks`` adds send, receive and ``SetBounds``
   (after the send of the same ``MeshData``); ``AddLaneFluxCorrectionTasks``
-  the same for the flux. The ``MeshData`` must hold variables of the given
-  lane only (make one with a variable subset per lane). Coalesced comms are
-  not supported on lanes.
+  the same for the flux. They exchange only the variables of the given lane;
+  the ``MeshData`` may also hold variables of other lanes and ordinary
+  variables, so one ``MeshData`` can be exchanged lane by lane (and with the
+  geometric exchange). The task functions are ``SendLaneBoundBufs``,
+  ``StartReceiveLaneBoundBufs``, ``ReceiveLaneBoundBufs`` and
+  ``SetLaneBounds``, templated on the lane ``BoundaryType`` and taking the
+  ``LaneId``. Coalesced comms are not supported on lanes.
+- **Caches.** The boundary cache of a ``MeshData`` keeps one sub-cache per
+  geometric ``BoundaryType`` (as before) and, for lanes, one per
+  (``BoundaryType``, send/receive, lane), created when the lane's tasks are
+  added; each holds only its lane's boundaries.
 - **Rebuild.** ``Mesh::RebuildLane(lane)`` is rank-local: it reruns the
   provider for every local block and rebuilds the lane's neighbor lists, tag
-  map and buffers. Other lanes and the geometric exchanges keep their buffers;
-  the comm-map epoch is bumped, so the boundary caches of every ``MeshData``
-  re-initialize at their next exchange. Every rank on either end of a changed
+  map and buffers, and bumps the lane's own comm-map epoch: only that lane's
+  sub-caches (in every ``MeshData``) re-initialize at their next exchange.
+  Other lanes and the geometric exchanges keep their buffers and caches.
+  Every rank on either end of a changed
   channel must call it before its next exchange on the lane, and the lane
   must be quiescent (no lane message of a previous exchange in flight, no
   receive posted), i.e. call it between exchanges. Lanes are rebuilt
   automatically with the other buffers when the mesh is (load balancing,
-  remeshing). ``RegisterNeighborProvider`` called after the mesh was built
+  remeshing), which bumps the global epoch and so re-initializes every cache.
+  ``RegisterNeighborProvider`` called after the mesh was built
   builds the lane right away.
 - **Cost.** Without a registered provider nothing is built or run for lanes:
   no lane neighbor lists, tag maps, buffers or tasks. The geometric exchanges
-  gain no branch in their pack and unpack kernels; the ``BoundaryType``
-  indexed cache array grows by three entries.
+  gain no branch in their pack and unpack kernels, and the ``BoundaryType``
+  indexed cache array keeps its size (the lane sub-caches live in a map that
+  stays empty).
 
 The ``provider_lanes`` example has a pool of 8 x 8 blocks and two lanes whose
 graphs ignore the block positions: a groups lane, where in each of three
 layers the blocks are shuffled into groups of 2 to 6 (each block is a lane
 neighbor of the other members, on channel ``(layer + gid) % 3``, so the two
 ends of a channel use different ids), and a ring lane over a shuffled block
-order. Per-block records are exchanged with an unpack op that sums the
+order. One ``MeshData`` holds both lanes' variables and an ordinary
+``FillGhost`` variable, and is exchanged lane by lane and with the ghost
+exchange. Per-block records are exchanged with an unpack op that sums the
 buffers of each channel in ascending gid, and a face flux with a combine op
 that replaces each block's candidate by the group mean. Before cycle 2 the
 groups are reshuffled and the lane rebuilt. Every cycle is checked bitwise on
 host against the graph; the results are identical on 1 to 4 ranks, and
+that replaces each block's candidate by the group mean. The library ops
+``boundary_ops::AverageOverlapping`` and ``flux_correction_ops::AverageShared``
+locate elements through the geometric index sets and coordinate transforms of a
+``BndInfo``, which lane buffers do not have, so the example keeps its own ops. Before cycle 2 the
+groups are reshuffled and the lane rebuilt; the example counts the cache
+initializations and checks that only the groups lane's caches were
+re-initialized. Every cycle is checked bitwise on host against the graph; the
+results are identical on 1 to 4 ranks, and
 ``provider_lanes/rebuild=false`` shows the check failing.

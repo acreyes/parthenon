@@ -79,9 +79,6 @@ template <BoundaryType BTYPE>
 void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
                                Mesh::comm_buf_map_t &buf_map, int only_lane = -1) {
   Mesh *pmesh = md->GetMeshPointer();
-  [[maybe_unused]] auto skip = [only_lane](const sp_cv_t &v) {
-    return only_lane >= 0 && v->GetLane() != only_lane;
-  };
   std::unordered_map<std::size_t, std::size_t>
       nbufs; // total (existing and new) number of buffers for
              // given size (ignoring sparse)
@@ -89,10 +86,7 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
       nbufs_allocated; // total that are actually allocated
 
   ForEachBoundary<BTYPE>(
-      md, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
-        if constexpr (IsLaneBoundary(BTYPE)) {
-          if (skip(v)) return;
-        }
+      md, only_lane, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
         // Calculate the required size of the buffer for this boundary
         const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
@@ -100,81 +94,79 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
         nbufs_allocated[buf_size] += v->IsAllocated();
       });
 
-  ForEachBoundary<BTYPE>(md, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb,
-                                 const sp_cv_t v) {
-    if constexpr (IsLaneBoundary(BTYPE)) {
-      if (skip(v)) return;
-    }
-    // Calculate the required size of the buffer for this boundary
-    const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
+  ForEachBoundary<BTYPE>(
+      md, only_lane, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
+        // Calculate the required size of the buffer for this boundary
+        const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
-    // Add a buffer pool if one does not exist for this size
-    using buf_t = buf_pool_t<Real>::base_t;
-    if (!pmesh->pool_map.Contains(buf_size)) {
-      // Minimum number of comm buffers to initialize a pool of a
-      // given shape with. As an upper bound, we use the maximum
-      // number that might be present.
-      const std::size_t nbuf = std::min(pmesh->CommBufferChunkSize(), nbufs.at(buf_size));
-      pmesh->pool_map.AddPool(buf_size, nbuf);
-    }
-    // Now that the pool is guaranteed to exist we can add free objects of the required
-    // amount.
-    const std::int64_t new_buffers_req =
-        nbufs_allocated.at(buf_size) -
-        pmesh->pool_map.GetPool(buf_size).NumBuffersInPool();
-    if (new_buffers_req > 0) {
-      pmesh->pool_map.AddFreeObjectsToPool(buf_size, new_buffers_req);
-    }
+        // Add a buffer pool if one does not exist for this size
+        using buf_t = buf_pool_t<Real>::base_t;
+        if (!pmesh->pool_map.Contains(buf_size)) {
+          // Minimum number of comm buffers to initialize a pool of a
+          // given shape with. As an upper bound, we use the maximum
+          // number that might be present.
+          const std::size_t nbuf =
+              std::min(pmesh->CommBufferChunkSize(), nbufs.at(buf_size));
+          pmesh->pool_map.AddPool(buf_size, nbuf);
+        }
+        // Now that the pool is guaranteed to exist we can add free objects of the
+        // required amount.
+        const std::int64_t new_buffers_req =
+            nbufs_allocated.at(buf_size) -
+            pmesh->pool_map.GetPool(buf_size).NumBuffersInPool();
+        if (new_buffers_req > 0) {
+          pmesh->pool_map.AddFreeObjectsToPool(buf_size, new_buffers_req);
+        }
 
-    const int receiver_rank = nb.rank;
-    const int sender_rank = Globals::my_rank;
+        const int receiver_rank = nb.rank;
+        const int sender_rank = Globals::my_rank;
 
 #ifdef MPI_PARALLEL
-    // Get a bi-directional mpi tag for this pair of blocks
-    auto comm_label = v->label();
-    mpi_comm_t comm = pmesh->GetMPIComm(comm_label);
+        // Get a bi-directional mpi tag for this pair of blocks
+        auto comm_label = v->label();
+        mpi_comm_t comm = pmesh->GetMPIComm(comm_label);
 
 #else
-      // Setting to zero is fine here since this doesn't actually get used when everything
-      // is on the same rank
-      mpi_comm_t comm = 0;
+        // Setting to zero is fine here since this doesn't actually get used when
+        // everything is on the same rank
+        mpi_comm_t comm = 0;
 #endif
 
-    bool use_sparse_buffers = v->IsSet(Metadata::Sparse);
-    auto get_resource_method = [pmesh, buf_size](int size) {
-      PARTHENON_REQUIRE(size <= buf_size,
-                        "Asking for a buffer that is larger than size of pool.");
-      return buf_pool_t<Real>::owner_t(pmesh->pool_map.GetPool(buf_size).Get());
-    };
+        bool use_sparse_buffers = v->IsSet(Metadata::Sparse);
+        auto get_resource_method = [pmesh, buf_size](int size) {
+          PARTHENON_REQUIRE(size <= buf_size,
+                            "Asking for a buffer that is larger than size of pool.");
+          return buf_pool_t<Real>::owner_t(pmesh->pool_map.GetPool(buf_size).Get());
+        };
 
-    // Build send buffer (unless this is a receiving flux boundary)
-    if constexpr (IsSender(BTYPE)) {
-      pmesh->LockCommLaneNumbers(BTYPE);
-      for (int lane = 0; lane < pmesh->GetNumberOfCommLanes(BTYPE); ++lane) {
-        auto s_key = SendKey(pmb, nb, v, BTYPE, lane);
-        const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, lane);
-        if (buf_map.count(s_key) == 0)
-          buf_map[s_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
-              tag, sender_rank, receiver_rank, comm, get_resource_method,
-              use_sparse_buffers);
-      }
-    }
-
-    // Also build the non-local receive buffers here
-    if constexpr (IsReceiver(BTYPE)) {
-      if (sender_rank != receiver_rank) {
-        pmesh->LockCommLaneNumbers(BTYPE);
-        for (int lane = 0; lane < pmesh->GetNumberOfCommLanes(BTYPE); ++lane) {
-          auto r_key = ReceiveKey(pmb, nb, v, BTYPE, lane);
-          const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, lane);
-          if (buf_map.count(r_key) == 0)
-            buf_map[r_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
-                tag, receiver_rank, sender_rank, comm, get_resource_method,
-                use_sparse_buffers);
+        // Build send buffer (unless this is a receiving flux boundary)
+        if constexpr (IsSender(BTYPE)) {
+          pmesh->LockCommLaneNumbers(BTYPE);
+          for (int lane = 0; lane < pmesh->GetNumberOfCommLanes(BTYPE); ++lane) {
+            auto s_key = SendKey(pmb, nb, v, BTYPE, lane);
+            const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, lane);
+            if (buf_map.count(s_key) == 0)
+              buf_map[s_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
+                  tag, sender_rank, receiver_rank, comm, get_resource_method,
+                  use_sparse_buffers);
+          }
         }
-      }
-    }
-  });
+
+        // Also build the non-local receive buffers here
+        if constexpr (IsReceiver(BTYPE)) {
+          if (sender_rank != receiver_rank) {
+            pmesh->LockCommLaneNumbers(BTYPE);
+            for (int lane = 0; lane < pmesh->GetNumberOfCommLanes(BTYPE); ++lane) {
+              auto r_key = ReceiveKey(pmb, nb, v, BTYPE, lane);
+              const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, lane);
+              if (buf_map.count(r_key) == 0)
+                buf_map[r_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
+                    tag, receiver_rank, sender_rank, comm, get_resource_method,
+                    use_sparse_buffers);
+            }
+          }
+        }
+      });
 }
 
 template <BoundaryType BTYPE>

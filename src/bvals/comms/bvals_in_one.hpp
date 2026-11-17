@@ -106,17 +106,28 @@ bool HasFluxCorrectionOps(std::shared_ptr<MeshData<Real>> &md);
 TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                               std::shared_ptr<MeshData<Real>> &md, bool multilevel);
 
-// Exchanges the Metadata::Lane variables of md (all on `lane`) between the neighbors the
-// lane's provider lists (Mesh::RegisterNeighborProvider): send (registered pack ops),
-// receive, and SetBounds (registered unpack ops, after the send of the same MeshData).
-// md must not hold variables of other lanes; make a MeshData with a variable subset to
-// exchange one lane of several. Asserts that coalesced comms are off.
+// Exchange tasks of one provider lane (BoundaryType::lane or lane_flxcor_*): only the
+// variables of md on that lane are exchanged, with sub-caches of md per lane
+template <BoundaryType bound_type>
+TaskStatus SendLaneBoundBufs(std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+template <BoundaryType bound_type>
+TaskStatus StartReceiveLaneBoundBufs(std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+template <BoundaryType bound_type>
+TaskStatus ReceiveLaneBoundBufs(std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+template <BoundaryType bound_type>
+TaskStatus SetLaneBounds(std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+
+// Exchanges the Metadata::Lane variables of md on `lane` between the neighbors the lane's
+// provider lists (Mesh::RegisterNeighborProvider): send (registered pack ops), receive,
+// and SetBounds (registered unpack ops, after the send of the same MeshData). Other
+// variables of md (other lanes, FillGhost) are not touched, so one MeshData can be
+// exchanged lane by lane. Asserts that coalesced comms are off.
 TaskID AddLaneExchangeTasks(TaskID dependency, TaskList &tl,
                             std::shared_ptr<MeshData<Real>> &md, LaneId lane);
 
-// The flux of every lane variable of md (all on `lane`) with a registered combine op:
-// pack ops fill one buffer per lane neighbor, the combine ops run on the receive side
-// after the send of the same MeshData.
+// The flux of every lane variable of md on `lane` with a registered combine op: pack ops
+// fill one buffer per lane neighbor, the combine ops run on the receive side after the
+// send of the same MeshData.
 TaskID AddLaneFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                                   std::shared_ptr<MeshData<Real>> &md, LaneId lane);
 

@@ -131,7 +131,8 @@ void Mesh::RebuildLane(LaneId lane_id) {
 
   SetLaneNeighbors_(lane);
   BuildLaneTagMap_(lane);
-  boundary_comm_map.EraseIf(on_lane);
+  // Bumps the lane's epoch: only this lane's boundary caches re-initialize
+  boundary_comm_map.EraseLane(lane, on_lane);
   BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()), lane);
 }
 
