@@ -42,6 +42,20 @@ a struct with one static function:
 
 The ops are hashed by their types (like refinement ops), so all variables that
 register the same pair share one op set.
+Members of a sparse pool inherit the ops registered on the pool's metadata.
+
+Same-level only
+---------------
+
+Registered ops handle the exchanges between blocks on the **same refinement
+level** only. Boundaries to a coarser or finer neighbor always take
+Parthenon's default path: restriction into the send buffer, the default pack
+and unpack, and prolongation of the received coarse data, using the
+variable's registered prolongation and restriction operations (see
+:doc:`refinement_operations`). Customise cross-level ghost fills with those
+operations, not with boundary ops. An op therefore never sees a coarse
+buffer, and every buffer in its bucket has the shape of a same-level ghost
+region.
 
 Calling sequence
 ----------------
@@ -75,42 +89,46 @@ buffers.
   (it is never sent as a null buffer of a sparse variable).
 - An op runs on host and launches its own kernels in ``DevExecSpace()``. It
   should write only its own variables (``Unpack``) or buffers (``Pack``).
-- Ops act on the variable's own ghost exchange for every ``BoundaryType`` it
-  takes part in (including GMG exchanges), not on flux correction.
+- Ops act on the variable's own same-level ghost exchange for every
+  ``BoundaryType`` it takes part in (including GMG exchanges), not on flux
+  correction.
 - Variables without registered ops are not affected: if no variable in a
   cache has ops, the cache holds no op buckets and the default kernels run
   over all boundaries exactly as before.
+
+Library ops
+-----------
+
+``bvals/comms/bnd_ops_library.hpp`` provides ready-made ops in
+``parthenon::boundary_ops``. They launch device kernels and are deterministic:
+their result is bitwise independent of the number of ranks and of the order in
+which buffers arrive.
+
+- ``AverageOverlapping`` (unpack): every ghost element gets the mean of all
+  same-level buffers that land on it, summed in ascending sender gid. On a
+  regular mesh each ghost region has one sender and this is the default copy.
+  Where several neighbors map onto one region, e.g. the node neighbors of a
+  node of valence other than four in a 2D forest, the default copy would keep
+  whichever buffer is unpacked last. Consecutive bucket entries with the same
+  (``block``, variable, ``offsets``) are one region; one team per region
+  zeroes it, adds the buffers one at a time in bucket order and divides by
+  their number. Unallocated (sparse) sender buffers count as the variable's
+  sparse default value.
+
+.. code:: c++
+
+   #include <bvals/comms/bnd_ops_library.hpp>
+
+   m.RegisterBoundaryOps<parthenon::boundary_ops::AverageOverlapping>();
 
 Example
 -------
 
 ``example/boundary_ops`` builds a 2D forest of fans whose central nodes have
-valence 3 to 6. Its variable registers ``AverageOverlappingGhosts``, which
-fills each ghost region with the mean of all buffers that map onto it, summed
-in ascending sender gid:
-
-.. code:: c++
-
-   // Consecutive entries with the same (block, offsets) fill one ghost region.
-   Kokkos::parallel_for(
-       "AverageOverlappingGhosts",
-       Kokkos::TeamPolicy<>(parthenon::DevExecSpace(), nregions, Kokkos::AUTO),
-       KOKKOS_LAMBDA(parthenon::team_mbr_t team) {
-         const int first = region_start(team.league_rank());
-         const int last = region_start(team.league_rank() + 1);
-         for (int n = first; n < last; ++n) {
-           auto &bi = info(idx(n));
-           // ... map buffer element m to ghost cell (kl, jl, il) as the default
-           // unpack does, then
-           ghost = (n == first) ? bi.buf(m) : ghost + bi.buf(m);
-           if (n == last - 1) ghost /= count;
-           team.team_barrier();
-         }
-       });
-
-At valence 5 and 6 two or three node neighbors share a corner ghost region of
-the blocks at the central node; with the default copy the region would hold
-whichever buffer was unpacked last. The regression test ``boundary_ops`` runs
-the example on 1, 2 and 4 ranks, checks every ghost region against the
-neighbor average and requires the ghost zones of all runs to be bitwise
-identical.
+valence 3 to 6. A dense variable and a member of a sparse pool both register
+``AverageOverlapping``. At valence 5 and 6 two or three node neighbors share a
+corner ghost region of the blocks at the central node; with the default copy
+the region would hold whichever buffer was unpacked last. The example checks
+every ghost region of both variables against the neighbor average. The
+regression test ``boundary_ops`` runs it on 1, 2 and 4 ranks and requires the
+ghost zones of all runs to be bitwise identical.

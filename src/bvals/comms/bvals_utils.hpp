@@ -299,7 +299,10 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
 
         if (use_ops) {
           const auto &funcs = v->GetBoundaryFunctions();
-          if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack())) {
+          // Ops get the same-level boundaries only; coarse-fine boundaries keep the
+          // default copy and the variable's prolongation/restriction ops
+          if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
+              nb.loc.level() == pmb->loc.level()) {
             op_keys.emplace_back(pkg->BoundaryFuncID(funcs), bi.block, v->label(),
                                  nb.offsets.GetIdx(), nb.gid, ibound, ibuf);
           } else {

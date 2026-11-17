@@ -36,6 +36,7 @@ class BoundaryOpsDriver : public Driver {
   }
 
   DriverStatus Execute() override {
+    boundary_ops::AllocateSparse(pmesh);
     TaskCollection tc;
     const int num_partitions = pmesh->DefaultNumPartitions();
     TaskRegion &region = tc.AddRegion(num_partitions);
