@@ -15,6 +15,7 @@
 #define EXAMPLE_BOUNDARY_OPS_BOUNDARY_OPS_HPP_
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 #include <bvals/comms/bnd_ops.hpp>
@@ -39,12 +40,35 @@ struct AverageOverlappingGhosts {
                      const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers);
 };
 
+// Every block sets every face (and edge) flux component c to this value of its gid.
+KOKKOS_INLINE_FUNCTION Real FluxValue(int gid, int c) { return (c + 1.0) / (gid + 3.0); }
+
+// Registered flux-correction combine op: every element shared by blocks on the same
+// level (a face of the face flux, a face or node of the 2D edge flux) gets the mean of
+// the values of all blocks sharing it, summed in ascending gid, so every block holds
+// the same bits (up to the sign of the frame). Shared faces have two blocks, nodes of
+// the edge flux two to six.
+struct AverageSharedFluxes {
+  static void Combine(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                      const parthenon::BndInfoArrHost_t &info_h,
+                      const parthenon::BndOpIdx_t &idx,
+                      const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers);
+};
+
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
 TaskStatus SetBlockValues(MeshData<Real> *md);
+TaskStatus SetFluxes(MeshData<Real> *md);
 // Checks every ghost region of every local block against the mean of its neighbors'
 // values. Returns the global number of wrong cells; reports the global number of
 // regions that averaged two or more neighbors in naveraged.
 int CheckGhosts(Mesh *pmesh, int *naveraged);
+// Checks every same-level shared flux element of every local block against the mean
+// of the values of the blocks sharing it, in ascending gid. Returns the global number of
+// wrong elements; counts the shared elements by number of blocks sharing them in
+// nshared (index 2..kMaxShared-1) and returns a hash of all fluxes, in gid order, in
+// hash.
+constexpr int kMaxShared = 16;
+int CheckFluxes(Mesh *pmesh, int nshared[kMaxShared], std::uint64_t *hash);
 
 } // namespace boundary_ops
 
