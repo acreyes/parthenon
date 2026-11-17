@@ -19,8 +19,10 @@
 #ifndef BVALS_COMMS_BND_INFO_HPP_
 #define BVALS_COMMS_BND_INFO_HPP_
 
+#include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "basic_types.hpp"
@@ -31,6 +33,7 @@
 #include "mesh/domain.hpp"
 #include "mesh/forest/logical_coordinate_transformation.hpp"
 #include "utils/communication_buffer.hpp"
+#include "utils/error_checking.hpp"
 #include "utils/indexer.hpp"
 #include "utils/object_pool.hpp"
 
@@ -252,16 +255,38 @@ struct BvarsSubCache_t {
   BndInfoArr_t bnd_info{};
   BndInfoArr_t::host_mirror_type bnd_info_h{};
   std::size_t epoch{0};
+
+  // Provider lanes: the lane of this sub-cache (-1 for geometric exchanges) and the
+  // lane's comm-map epoch when the cache was initialized
+  int lane{-1};
+  std::size_t lane_epoch{0};
+  // Number of times InitializeBufferCache ran on this sub-cache
+  std::size_t initializations{0};
 };
 
 struct BvarsCache_t {
-  std::array<BvarsSubCache_t, NUM_BNDRY_TYPES * 2> caches;
+  // Geometric exchanges: one sub-cache per (BoundaryType, send); the lane types come
+  // last in BoundaryType and have no slot here
+  static constexpr int num_geometric_types = static_cast<int>(BoundaryType::lane);
+  std::array<BvarsSubCache_t, num_geometric_types * 2> caches;
+  // Provider lanes: one sub-cache per (BoundaryType, send, lane), created on first use
+  std::map<std::tuple<BoundaryType, bool, int>, BvarsSubCache_t> lane_caches;
+
   auto &GetSubCache(BoundaryType boundType, bool send) {
+    PARTHENON_DEBUG_REQUIRE(!IsLaneBoundary(boundType),
+                            "Lane exchanges use GetLaneSubCache.");
     return caches[2 * static_cast<int>(boundType) + send];
+  }
+  BvarsSubCache_t &GetLaneSubCache(BoundaryType boundType, bool send, int lane) {
+    auto [it, inserted] = lane_caches.try_emplace({boundType, send, lane});
+    if (inserted) it->second.lane = lane;
+    return it->second;
   }
   void clear() {
     for (std::size_t i = 0; i < caches.size(); ++i)
       caches[i].clear();
+    for (auto &[key, cache] : lane_caches)
+      cache.clear();
   }
 };
 

@@ -44,7 +44,9 @@
 namespace parthenon {
 
 bool BvarsSubCache_t::RequiresReinitialize(Mesh *pmesh) const {
-  return buf_vec.size() == 0 || epoch != pmesh->boundary_comm_map.GetCurrentEpoch();
+  const auto &comm_map = pmesh->boundary_comm_map;
+  return buf_vec.size() == 0 || epoch != comm_map.GetCurrentEpoch() ||
+         (lane >= 0 && lane_epoch != comm_map.GetLaneEpoch(lane));
 }
 
 void ProResCache_t::Initialize(int n_regions, StateDescriptor *pkg) {

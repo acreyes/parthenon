@@ -96,6 +96,8 @@ inline constexpr bool IsLaneBoundary(BoundaryType btype) {
   return btype == BoundaryType::lane || btype == BoundaryType::lane_flxcor_send ||
          btype == BoundaryType::lane_flxcor_recv;
 }
+static_assert(static_cast<int>(BoundaryType::lane_flxcor_recv) == NUM_BNDRY_TYPES - 1,
+              "The provider-lane boundary types come last in BoundaryType.");
 
 inline constexpr bool IsSender(BoundaryType btype) {
   if (btype == BoundaryType::flxcor_recv) return false;

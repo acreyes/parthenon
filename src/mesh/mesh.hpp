@@ -355,15 +355,24 @@ class Mesh {
       m_.clear();
       epoch_++;
     }
-    // Removes the buffers whose key satisfies pred, and bumps the epoch so that every
-    // boundary cache re-initializes (used by Mesh::RebuildLane)
+    // Provider lanes have their own epoch, bumped by Mesh::RebuildLane; a lane's boundary
+    // caches re-initialize when either epoch changes
+    std::size_t GetLaneEpoch(int lane) const {
+      return lane < static_cast<int>(lane_epochs_.size()) ? lane_epochs_[lane] : 0;
+    }
+    // Removes the buffers of one lane (those whose key satisfies pred) and bumps that
+    // lane's epoch only; other buffers and the boundary caches pointing to them are kept
     template <class Pred>
-    void EraseIf(Pred &&pred) {
+    void EraseLane(int lane, Pred &&pred) {
       for (auto it = m_.begin(); it != m_.end();) {
         it = pred(it->first) ? m_.erase(it) : std::next(it);
       }
-      epoch_++;
+      if (lane >= static_cast<int>(lane_epochs_.size())) lane_epochs_.resize(lane + 1, 0);
+      lane_epochs_[lane]++;
     }
+
+   private:
+    std::vector<std::size_t> lane_epochs_;
   };
 
   ObjectPoolMap<BufArray1D<Real>> pool_map;
@@ -434,12 +443,12 @@ class Mesh {
   }
   // Rank-local full rebuild of one lane after its provider's graph changed: reruns the
   // provider for every local block, rebuilds the lane's neighbor lists, tag map and
-  // buffers, and bumps the comm-map epoch so that the boundary caches of every MeshData
-  // re-initialize at their next exchange. Other lanes and the geometric exchanges keep
-  // their buffers. Every rank on either end of a changed channel must call it before
-  // its next exchange on the lane. The lane must be quiescent: every message of its
-  // previous exchanges completed and no receive posted (i.e. call it between exchanges,
-  // not while lane tasks are in flight).
+  // buffers, and bumps the lane's comm-map epoch so that the lane's sub-caches in every
+  // MeshData re-initialize at their next exchange. Other lanes and the geometric
+  // exchanges keep their buffers and caches. Every rank on either end of a changed
+  // channel must call it before its next exchange on the lane. The lane must be
+  // quiescent: every message of its previous exchanges completed and no receive posted
+  // (i.e. call it between exchanges, not while lane tasks are in flight).
   void RebuildLane(LaneId lane);
   TagMap &GetLaneTagMap(int lane) { return lane_tag_maps_.at(lane); }
 
