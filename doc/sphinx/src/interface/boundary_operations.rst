@@ -1,3 +1,5 @@
+.. This file was made in part with generative AI.
+
 .. _boundary-ops:
 
 Registered Boundary Operations
