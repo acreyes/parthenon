@@ -1,3 +1,5 @@
+.. This file was made in part with generative AI.
+
 .. _boundary_communication:
 
 Boundary communication-in-one concepts
@@ -563,6 +565,12 @@ flux correction that only worked for cell variable flux correction). Notice that
 operation requires a different ``BoundaryType`` than the receive operation, unlike regular
 boundary communication. All of these tasks can be added to a task list in one call using 
 ``AddFluxCorrectionTasks``.
+
+A flux variable with a registered combine op
+(``Metadata::RegisterFluxCorrectionOps``, see :ref:`boundary-ops`) is also exchanged
+between blocks on the same level, and the op combines the fluxes on the shared elements
+instead of overwriting them. ``AddFluxCorrectionTasks`` then runs on meshes without
+refinement too.
 
 Flux correction for sparse variables and dense variables is very
 similar, the only difference being that for sparse variables if either
