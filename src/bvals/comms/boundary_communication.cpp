@@ -223,9 +223,13 @@ void ApplyBoundaryOps(MeshData<Real> *md, BvarsSubCache_t *pcache, bool send) {
     BndOpIdxHost_t subset_h = Kokkos::subview(ops.buffer_subsets_h, id, Kokkos::ALL());
     op(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n);
   };
-  if constexpr (bound_type == BoundaryType::flxcor_recv) {
+  if constexpr (bound_type == BoundaryType::flxcor_recv ||
+                bound_type == BoundaryType::lane_flxcor_recv) {
     for (const auto &[funcs, id] : pkg->FluxCorrectionFncsToIDs())
       apply(funcs.combine, id);
+  } else if constexpr (bound_type == BoundaryType::lane_flxcor_send) {
+    for (const auto &[funcs, id] : pkg->FluxCorrectionFncsToIDs())
+      apply(funcs.pack, id);
   } else {
     for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs())
       apply(send ? funcs.pack : funcs.unpack, id);
@@ -262,7 +266,10 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
   }
 
   if (rebuild) {
-    if constexpr (bound_type == BoundaryType::gmg_restrict_send) {
+    if constexpr (IsLaneBoundary(bound_type)) {
+      RebuildBufferCache<bound_type, true>(md, nbound, BndInfo::GetLaneSendBndInfo,
+                                           ProResInfo::GetNull);
+    } else if constexpr (bound_type == BoundaryType::gmg_restrict_send) {
       RebuildBufferCache<bound_type, true>(md, nbound, BndInfo::GetSendBndInfo,
                                            ProResInfo::GetInteriorRestrict);
     } else if constexpr (bound_type == BoundaryType::gmg_prolongate_send) {
@@ -274,7 +281,7 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
     }
   }
   // Restrict
-  if (md->NumBlocks() > 0 && do_restriction) {
+  if (md->NumBlocks() > 0 && do_restriction && !IsLaneBoundary(bound_type)) {
     auto pmb = md->GetBlockData(0)->GetBlockPointer();
     StateDescriptor *resolved_packages = pmb->resolved_packages.get();
     refinement::Restrict(resolved_packages, cache.prores_cache, pmb->cellbounds,
@@ -355,6 +362,11 @@ template TaskStatus SendBoundBufsWithRestrictOption<BoundaryType::flxcor_send>(
 template TaskStatus
 SendBoundBufsWithRestrictOption<BoundaryType::gmg_same>(std::shared_ptr<MeshData<Real>> &,
                                                         bool);
+template TaskStatus
+SendBoundBufsWithRestrictOption<BoundaryType::lane>(std::shared_ptr<MeshData<Real>> &,
+                                                    bool);
+template TaskStatus SendBoundBufsWithRestrictOption<BoundaryType::lane_flxcor_send>(
+    std::shared_ptr<MeshData<Real>> &, bool);
 
 template <BoundaryType bound_type>
 TaskStatus StartReceiveBoundBufs(std::shared_ptr<MeshData<Real>> &md) {
@@ -386,6 +398,10 @@ template TaskStatus
 StartReceiveBoundBufs<BoundaryType::flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 template TaskStatus
 StartReceiveBoundBufs<BoundaryType::gmg_same>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus
+StartReceiveBoundBufs<BoundaryType::lane>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus
+StartReceiveBoundBufs<BoundaryType::lane_flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 
 template <BoundaryType bound_type>
 TaskStatus ReceiveBoundBufs(std::shared_ptr<MeshData<Real>> &md) {
@@ -441,6 +457,10 @@ template TaskStatus
 ReceiveBoundBufs<BoundaryType::flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 template TaskStatus
 ReceiveBoundBufs<BoundaryType::gmg_same>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus
+ReceiveBoundBufs<BoundaryType::lane>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus
+ReceiveBoundBufs<BoundaryType::lane_flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 
 template <BoundaryType bound_type>
 TaskStatus SetBounds(std::shared_ptr<MeshData<Real>> &md) {
@@ -456,7 +476,10 @@ TaskStatus SetBounds(std::shared_ptr<MeshData<Real>> &md) {
   }
 
   if (rebuild) {
-    if constexpr (bound_type == BoundaryType::gmg_prolongate_recv) {
+    if constexpr (IsLaneBoundary(bound_type)) {
+      RebuildBufferCache<bound_type, false>(md, nbound, BndInfo::GetLaneSetBndInfo,
+                                            ProResInfo::GetNull);
+    } else if constexpr (bound_type == BoundaryType::gmg_prolongate_recv) {
       RebuildBufferCache<bound_type, false>(md, nbound, BndInfo::GetSetBndInfo,
                                             ProResInfo::GetInteriorProlongate);
     } else if constexpr (bound_type == BoundaryType::gmg_restrict_recv) {
@@ -487,7 +510,8 @@ TaskStatus SetBounds(std::shared_ptr<MeshData<Real>> &md) {
 #endif
   std::for_each(std::begin(cache.buf_vec), std::end(cache.buf_vec),
                 [](auto pbuf) { pbuf->Stale(); });
-  if (nbound > 0 && pmesh->multilevel && md->NumBlocks() > 0) {
+  if (nbound > 0 && pmesh->multilevel && md->NumBlocks() > 0 &&
+      !IsLaneBoundary(bound_type)) {
     // Restrict
     auto pmb = md->GetBlockData(0)->GetBlockPointer();
     StateDescriptor *resolved_packages = pmb->resolved_packages.get();
@@ -507,6 +531,9 @@ SetBounds<BoundaryType::gmg_prolongate_recv>(std::shared_ptr<MeshData<Real>> &);
 template TaskStatus
 SetBounds<BoundaryType::flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 template TaskStatus SetBounds<BoundaryType::gmg_same>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus SetBounds<BoundaryType::lane>(std::shared_ptr<MeshData<Real>> &);
+template TaskStatus
+SetBounds<BoundaryType::lane_flxcor_recv>(std::shared_ptr<MeshData<Real>> &);
 
 template <BoundaryType bound_type>
 TaskStatus ProlongateBounds(std::shared_ptr<MeshData<Real>> &md) {
@@ -610,5 +637,40 @@ TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
   if (combine)
     return tl.AddTask(send | receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
   return tl.AddTask(receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
+}
+
+namespace {
+void RequireLaneMeshData(std::shared_ptr<MeshData<Real>> &md, LaneId lane) {
+  PARTHENON_REQUIRE(!md->GetMeshPointer()->do_coalesced_comms,
+                    "Provider lanes do not support coalesced comms.");
+  // Every block of a MeshData holds the same variables
+  if (md->NumBlocks() == 0) return;
+  for (const auto &v : md->GetBlockData(0)->GetVariableVector()) {
+    PARTHENON_REQUIRE(!v->IsSet(Metadata::Lane) || v->GetLane() == static_cast<int>(lane),
+                      "Lane exchange of lane " + std::to_string(static_cast<int>(lane)) +
+                          " on a MeshData holding " + v->label() + " of lane " +
+                          std::to_string(v->GetLane()));
+  }
+}
+} // namespace
+
+TaskID AddLaneExchangeTasks(TaskID dependency, TaskList &tl,
+                            std::shared_ptr<MeshData<Real>> &md, LaneId lane) {
+  RequireLaneMeshData(md, lane);
+  auto send = tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::lane>), md);
+  auto receive = tl.AddTask(dependency, TF(ReceiveBoundBufs<BoundaryType::lane>), md);
+  // Unpack ops may write what the pack ops read
+  return tl.AddTask(send | receive, TF(SetBounds<BoundaryType::lane>), md);
+}
+
+TaskID AddLaneFluxCorrectionTasks(TaskID dependency, TaskList &tl,
+                                  std::shared_ptr<MeshData<Real>> &md, LaneId lane) {
+  RequireLaneMeshData(md, lane);
+  auto send =
+      tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::lane_flxcor_send>), md);
+  auto receive =
+      tl.AddTask(dependency, TF(ReceiveBoundBufs<BoundaryType::lane_flxcor_recv>), md);
+  // Combine ops overwrite fluxes that the send must have packed first
+  return tl.AddTask(send | receive, TF(SetBounds<BoundaryType::lane_flxcor_recv>), md);
 }
 } // namespace parthenon

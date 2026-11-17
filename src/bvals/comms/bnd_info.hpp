@@ -84,6 +84,10 @@ struct BndInfo {
   int send_gid = -1;
   int recv_gid = -1;
   CellCentOffsets offsets{0, 0, 0};
+  // Provider lanes only: the channel ids of the exchange on the local block and on the
+  // neighbor (offsets are zero there)
+  int channel = -1;
+  int nb_channel = -1;
 
   KOKKOS_DEFAULTED_FUNCTION
   BndInfo() = default;
@@ -102,6 +106,13 @@ struct BndInfo {
   static BndInfo GetSetBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
                                std::shared_ptr<Variable<Real>> v,
                                CommBuffer<buf_pool_t<Real>::owner_t> *buf);
+  // Provider lanes: buffer and variable only, no index set (ops do the packing)
+  static BndInfo GetLaneSendBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
+                                    std::shared_ptr<Variable<Real>> v,
+                                    CommBuffer<buf_pool_t<Real>::owner_t> *buf);
+  static BndInfo GetLaneSetBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
+                                   std::shared_ptr<Variable<Real>> v,
+                                   CommBuffer<buf_pool_t<Real>::owner_t> *buf);
 };
 
 struct ProResInfo {
@@ -148,6 +159,9 @@ struct ProResInfo {
 
 int GetBufferSize(const MeshBlock *const pmb, const NeighborBlock &nb,
                   std::shared_ptr<Variable<Real>> v);
+// Buffer size on a provider lane, from the registered pack op's BufferSize
+int GetLaneBufferSize(const MeshBlock *const pmb, const NeighborBlock &nb,
+                      std::shared_ptr<Variable<Real>> v, bool flux);
 
 using BndInfoArr_t = ParArray1DRaw<BndInfo>;
 using BndInfoArrHost_t = typename BndInfoArr_t::host_mirror_type;

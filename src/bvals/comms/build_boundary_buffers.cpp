@@ -14,6 +14,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #include <algorithm>
 #include <cstddef>
@@ -44,10 +45,42 @@ using namespace loops;
 using namespace loops::shorthands;
 
 namespace {
+// Buffer size of a boundary; on provider lanes from the registered pack op
+template <BoundaryType BTYPE>
+int BoundaryBufferSize(const MeshBlock *pmb, const NeighborBlock &nb,
+                       const std::shared_ptr<Variable<Real>> &v) {
+  if constexpr (IsLaneBoundary(BTYPE)) {
+    return GetLaneBufferSize(pmb, nb, v, BTYPE != BoundaryType::lane);
+  } else {
+    //  LR: Multigrid logic requires blocks sending messages to themselves (since the
+    //  same block can show up on two multigrid levels). This doesn't require any data
+    //  transfer, so the message size can be zero. It is essentially just a flag to
+    //  show that the block is done being used on one level and can be used on the
+    //  next level.
+    if (pmb->gid == nb.gid && nb.offsets.IsCell()) return 0;
+    return GetBufferSize(pmb, nb, v);
+  }
+}
+
+template <BoundaryType BTYPE>
+int GetBoundaryTag(Mesh *pmesh, const MeshBlock *pmb, const NeighborBlock &nb,
+                   const std::shared_ptr<Variable<Real>> &v, int id) {
+  if constexpr (IsLaneBoundary(BTYPE)) {
+    return pmesh->GetLaneTagMap(v->GetLane()).GetLaneTag(pmb, nb, id);
+  } else {
+    return pmesh->tag_map.GetTag(pmb, nb, id);
+  }
+}
+
+// Builds the missing buffers of the boundaries of type BTYPE; on provider lanes of lane
+// only_lane if it is non-negative
 template <BoundaryType BTYPE>
 void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
-                               Mesh::comm_buf_map_t &buf_map) {
+                               Mesh::comm_buf_map_t &buf_map, int only_lane = -1) {
   Mesh *pmesh = md->GetMeshPointer();
+  [[maybe_unused]] auto skip = [only_lane](const sp_cv_t &v) {
+    return only_lane >= 0 && v->GetLane() != only_lane;
+  };
   std::unordered_map<std::size_t, std::size_t>
       nbufs; // total (existing and new) number of buffers for
              // given size (ignoring sparse)
@@ -56,14 +89,11 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
 
   ForEachBoundary<BTYPE>(
       md, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
+        if constexpr (IsLaneBoundary(BTYPE)) {
+          if (skip(v)) return;
+        }
         // Calculate the required size of the buffer for this boundary
-        int buf_size = GetBufferSize(pmb, nb, v);
-        //  LR: Multigrid logic requires blocks sending messages to themselves (since the
-        //  same block can show up on two multigrid levels). This doesn't require any data
-        //  transfer, so the message size can be zero. It is essentially just a flag to
-        //  show that the block is done being used on one level and can be used on the
-        //  next level.
-        if (pmb->gid == nb.gid && nb.offsets.IsCell()) buf_size = 0;
+        const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
         nbufs[buf_size] += 1; // relying on value init of int to 0 for initial entry
         nbufs_allocated[buf_size] += v->IsAllocated();
@@ -71,10 +101,11 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
 
   ForEachBoundary<BTYPE>(md, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb,
                                  const sp_cv_t v) {
+    if constexpr (IsLaneBoundary(BTYPE)) {
+      if (skip(v)) return;
+    }
     // Calculate the required size of the buffer for this boundary
-    int buf_size = GetBufferSize(pmb, nb, v);
-    // See comment above on the same logic.
-    if (pmb->gid == nb.gid && nb.offsets.IsCell()) buf_size = 0;
+    const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
     // Add a buffer pool if one does not exist for this size
     using buf_t = buf_pool_t<Real>::base_t;
@@ -120,7 +151,7 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
       pmesh->LockCommChannelNumbers(BTYPE);
       for (int id = 0; id < pmesh->GetNumberOfCommChannels(BTYPE); ++id) {
         auto s_key = SendKey(pmb, nb, v, BTYPE, id);
-        const int tag = pmesh->tag_map.GetTag(pmb, nb, id);
+        const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, id);
         if (buf_map.count(s_key) == 0)
           buf_map[s_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
               tag, sender_rank, receiver_rank, comm, get_resource_method,
@@ -134,7 +165,7 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
         pmesh->LockCommChannelNumbers(BTYPE);
         for (int id = 0; id < pmesh->GetNumberOfCommChannels(BTYPE); ++id) {
           auto r_key = ReceiveKey(pmb, nb, v, BTYPE, id);
-          const int tag = pmesh->tag_map.GetTag(pmb, nb, id);
+          const int tag = GetBoundaryTag<BTYPE>(pmesh, pmb, nb, v, id);
           if (buf_map.count(r_key) == 0)
             buf_map[r_key] = CommBuffer<buf_pool_t<Real>::owner_t>(
                 tag, receiver_rank, sender_rank, comm, get_resource_method,
@@ -189,6 +220,19 @@ TaskStatus BuildGMGBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md) {
                                                              pmesh->boundary_comm_map);
   BuildBoundaryBufferSubset<BoundaryType::gmg_restrict_recv>(md,
                                                              pmesh->boundary_comm_map);
+
+  return TaskStatus::complete;
+}
+
+TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane) {
+  PARTHENON_INSTRUMENT
+  Mesh *pmesh = md->GetMeshPointer();
+
+  BuildBoundaryBufferSubset<BoundaryType::lane>(md, pmesh->boundary_comm_map, lane);
+  BuildBoundaryBufferSubset<BoundaryType::lane_flxcor_send>(md, pmesh->boundary_comm_map,
+                                                            lane);
+  BuildBoundaryBufferSubset<BoundaryType::lane_flxcor_recv>(md, pmesh->boundary_comm_map,
+                                                            lane);
 
   return TaskStatus::complete;
 }

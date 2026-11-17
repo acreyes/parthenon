@@ -14,9 +14,11 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "bnd_info.hpp"
 #include "bvals_utils.hpp"
@@ -35,6 +37,30 @@ TagMap::rank_pair_t TagMap::MakeChannelPair(const MeshBlock *pmb,
   BlockGeometricElementId bgei_me{pmb->gid, location_idx_me};
   BlockGeometricElementId bgei_nb{nb.gid, location_idx_nb};
   return UnorderedPair<BlockGeometricElementId>(bgei_me, bgei_nb);
+}
+
+TagMap::rank_pair_t TagMap::MakeLaneChannelPair(const MeshBlock *pmb,
+                                                const NeighborBlock &nb) {
+  BlockGeometricElementId bgei_me{pmb->gid, nb.lane_channel};
+  BlockGeometricElementId bgei_nb{nb.gid, nb.lane_nb_channel};
+  return UnorderedPair<BlockGeometricElementId>(bgei_me, bgei_nb);
+}
+
+void TagMap::AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBlock> &nbs,
+                              int channels_per_pair) {
+  for (const auto &nb : nbs) {
+    auto &pair_map = map_[nb.rank];
+    for (int id = 0; id < channels_per_pair; ++id)
+      pair_map[std::make_pair(MakeLaneChannelPair(pmb, nb), id)] = -1;
+  }
+}
+
+int TagMap::GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb, const int id) {
+  auto &pair_map = map_[nb.rank];
+  auto key = std::make_pair(MakeLaneChannelPair(pmb, nb), id);
+  PARTHENON_REQUIRE(pair_map.count(key) == 1,
+                    "Trying to get tag for lane channel that hasn't been entered.\n");
+  return pair_map[key];
 }
 
 template <BoundaryType BOUND>

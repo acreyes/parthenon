@@ -106,6 +106,20 @@ bool HasFluxCorrectionOps(std::shared_ptr<MeshData<Real>> &md);
 TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                               std::shared_ptr<MeshData<Real>> &md, bool multilevel);
 
+// Exchanges the Metadata::Lane variables of md (all on `lane`) between the neighbors the
+// lane's provider lists (Mesh::RegisterNeighborProvider): send (registered pack ops),
+// receive, and SetBounds (registered unpack ops, after the send of the same MeshData).
+// md must not hold variables of other lanes; make a MeshData with a variable subset to
+// exchange one lane of several. Asserts that coalesced comms are off.
+TaskID AddLaneExchangeTasks(TaskID dependency, TaskList &tl,
+                            std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+
+// The flux of every lane variable of md (all on `lane`) with a registered combine op:
+// pack ops fill one buffer per lane neighbor, the combine ops run on the receive side
+// after the send of the same MeshData.
+TaskID AddLaneFluxCorrectionTasks(TaskID dependency, TaskList &tl,
+                                  std::shared_ptr<MeshData<Real>> &md, LaneId lane);
+
 using BValOnMDFunc_t = std::function<TaskStatus(std::shared_ptr<MeshData<Real>> &, bool)>;
 using BValOnMDTasks_t =
     std::function<TaskID(TaskID, TaskList *, std::shared_ptr<MeshData<Real>>, bool)>;
@@ -152,6 +166,8 @@ TaskID AddBoundaryExchangeTasks(
 // These tasks should not be called in down stream code
 TaskStatus BuildBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md);
 TaskStatus BuildGMGBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md);
+// Builds the missing buffers of the lane exchanges of md, of one lane only if lane >= 0
+TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane = -1);
 // And this one should only be called AFTER the ones above
 TaskStatus RegisterCoalescedComms(std::shared_ptr<MeshData<Real>> &md);
 TaskStatus RegisterCoalescedCommsGMG(std::shared_ptr<MeshData<Real>> &md);

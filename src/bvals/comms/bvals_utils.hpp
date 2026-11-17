@@ -52,6 +52,10 @@ inline std::string GetLabel(Mesh::channel_key_t &key) {
          ", var: " + GetVariable(key) + ", location: " + std::to_string(GetLocIdx(key)) +
          ", other:" + std::to_string(GetOther(key));
 }
+// On provider lanes the location of a channel is its pair of channel ids
+inline int LaneLocIdx(int send_channel, int recv_channel) {
+  return send_channel * MaxLaneChannels + recv_channel;
+}
 // SendKey/ReceiveKey are templated on the field type since they only need
 // field->label().
 template <class Field>
@@ -59,6 +63,9 @@ inline Mesh::channel_key_t SendKey(const MeshBlock *pmb, const NeighborBlock &nb
                                    const Field &pcv, BoundaryType btype, int id) {
   const int sender_id = pmb->gid;
   const int receiver_id = nb.gid;
+  if (IsLaneBoundary(btype))
+    return {sender_id, receiver_id, pcv->label(),
+            LaneLocIdx(nb.lane_channel, nb.lane_nb_channel), 2 * id};
   const int location_idx = nb.offsets.GetIdx();
 
   int gmg_self_comm = (nb.gid == pmb->gid && (btype == BoundaryType::gmg_restrict_recv ||
@@ -75,6 +82,9 @@ inline Mesh::channel_key_t ReceiveKey(const MeshBlock *pmb, const NeighborBlock 
                                       const Field &pcv, BoundaryType btype, int id) {
   const int receiver_id = pmb->gid;
   const int sender_id = nb.gid;
+  if (IsLaneBoundary(btype))
+    return {sender_id, receiver_id, pcv->label(),
+            LaneLocIdx(nb.lane_nb_channel, nb.lane_channel), 2 * id};
   const int location_idx = nb.lcoord_trans.Transform(nb.offsets).GetReverseIdx();
   int gmg_self_comm = (nb.gid == pmb->gid && (btype == BoundaryType::gmg_restrict_recv ||
                                               btype == BoundaryType::gmg_restrict_send))
@@ -277,8 +287,12 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   // combine ops on the receiving side only
   constexpr bool flx_send = BOUND_TYPE == BoundaryType::flxcor_send;
   constexpr bool flx_recv = BOUND_TYPE == BoundaryType::flxcor_recv;
+  // On lanes the flux exchange has registered ops on both sides (pack and combine)
+  constexpr bool lane_flx = BOUND_TYPE == BoundaryType::lane_flxcor_send ||
+                            BOUND_TYPE == BoundaryType::lane_flxcor_recv;
+  constexpr bool on_lane = IsLaneBoundary(BOUND_TYPE);
   std::size_t nfuncs = 0;
-  if constexpr (flx_recv) {
+  if constexpr (flx_recv || lane_flx) {
     nfuncs = pkg->NumFluxCorrectionFuncs();
   } else if constexpr (!flx_send) {
     nfuncs = pkg->NumBoundaryFuncs();
@@ -303,10 +317,16 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
         bi.send_gid = SENDER ? pmb->gid : nb.gid;
         bi.recv_gid = SENDER ? nb.gid : pmb->gid;
         bi.offsets = nb.offsets;
+        if constexpr (on_lane) {
+          bi.channel = nb.lane_channel;
+          bi.nb_channel = nb.lane_nb_channel;
+        }
 
         if (use_ops) {
           int id = -1;
-          if constexpr (flx_recv) {
+          if constexpr (lane_flx) {
+            id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
+          } else if constexpr (flx_recv) {
             // Combine ops get the same-level boundaries only
             if (v->HasFluxCorrectionOps() && nb.loc.level() == pmb->loc.level())
               id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
@@ -316,7 +336,8 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
               id = pkg->BoundaryFuncID(funcs);
           }
           if (id >= 0) {
-            op_keys.emplace_back(id, bi.block, v->label(), nb.offsets.GetIdx(), nb.gid,
+            op_keys.emplace_back(id, bi.block, v->label(),
+                                 on_lane ? nb.lane_channel : nb.offsets.GetIdx(), nb.gid,
                                  ibound, ibuf);
           } else {
             default_bufs.push_back(ibuf);
