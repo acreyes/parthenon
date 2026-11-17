@@ -6,6 +6,8 @@
 
 ### Added (new features/APIs/variables/...)
 - [[PR 5]](https://github.com/acreyes/parthenon/pull/5) Add provider lanes (`Mesh::RegisterNeighborProvider`, `Metadata::SetLane`, `AddLaneExchangeTasks`), `Mesh::RebuildLane` and the `provider_lanes` example; per-lane boundary sub-caches in one `MeshData` and per-lane comm-map epochs (`RebuildLane` re-initializes only that lane's caches)
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Add `Mesh::PermuteBlocks` run at a user cadence (`ApplicationInput::MeshBlockPermutation`, `parthenon/loadbalancing/permute_interval`), load-balance groups (`ApplicationInput::LoadBalanceGroups`) and the `permute_blocks` example
+- [[PR 5]](https://github.com/acreyes/parthenon/pull/5) Add provider lanes (`Mesh::RegisterNeighborProvider`, `Metadata::SetLane`, `AddLaneExchangeTasks`), `Mesh::RebuildLane` and the `provider_lanes` example
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Add registered same-level flux-correction combine ops (`Metadata::RegisterFluxCorrectionOps<Combine>`) and the library op `flux_correction_ops::AverageShared`
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered same-level boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`), variable-length payloads for registered pack/unpack ops, the library op `boundary_ops::AverageOverlapping` and the `boundary_ops` example
 
@@ -17,6 +19,7 @@
 ### Fixed (not changing behavior/API/variables/...)
 - [[PR 1502]](https://github.com/parthenon-hpc-lab/parthenon/pull/1502) Make Toth & Roe internal prolongation divergence free for non-cubic cells and curvilinear coordinates
 - [[PR 1473]](https://github.com/parthenon-hpc-lab/parthenon/pull/1473) Support coalesced communication with multiple comm lanes (e.g. multigrid with `do_coalesced_comms=true`), fix coalesced communication for partitions that don't communicate with every neighboring rank and for partitions on different grids
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Fix `Forest::Make2D` node-neighbor coordinate transforms at nodes of valence >= 6
 - [[PR 1445]](https://github.com/parthenon-hpc-lab/parthenon/pull/1445) Fix ownership for self-bordering blocks
