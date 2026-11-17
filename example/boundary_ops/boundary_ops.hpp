@@ -26,15 +26,26 @@ using namespace parthenon::package::prelude;
 // representable, so a sum over several neighbors depends on the summation order.
 KOKKOS_INLINE_FUNCTION Real BlockValue(int gid) { return 1.0 / (gid + 3.0); }
 
+// Every block sets every face (and edge) flux component c to this value of its gid.
+KOKKOS_INLINE_FUNCTION Real FluxValue(int gid, int c) { return (c + 1.0) / (gid + 3.0); }
+
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
 TaskStatus SetBlockValues(MeshData<Real> *md);
-// Allocates the sparse variable on every block (a no-op without sparse support).
+TaskStatus SetFluxes(MeshData<Real> *md);
+// Allocates the sparse variables on every block (a no-op without sparse support).
 void AllocateSparse(Mesh *pmesh);
 // Checks every ghost region of every local block, for the dense and the sparse variable,
 // against the mean of its neighbors' values. Returns the global number of wrong cells;
 // reports the global number of regions that averaged two or more neighbors in
 // naveraged.
 int CheckGhosts(Mesh *pmesh, int *naveraged);
+// Checks every same-level shared flux element of every local block against the mean
+// of the values of the blocks sharing it, in ascending gid. Returns the global number of
+// wrong elements; counts the shared elements by number of blocks sharing them in
+// nshared (index 2..kMaxShared-1) and returns a hash of all fluxes, in gid order, in
+// hash.
+constexpr int kMaxShared = 16;
+int CheckFluxes(Mesh *pmesh, int nshared[kMaxShared], std::uint64_t *hash);
 
 // Variable-length payloads: the pack op of "varlen" fills and sends a cycle- and
 // neighbor-dependent number of leading buffer elements, the unpack op checks the

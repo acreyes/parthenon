@@ -27,7 +27,7 @@
 using namespace parthenon::driver::prelude;
 
 namespace {
-// Exchanges ghost zones ncycles times and checks them.
+// Exchanges ghost zones and flux corrections ncycles times and checks them.
 class BoundaryOpsDriver : public Driver {
  public:
   BoundaryOpsDriver(ParameterInput *pin, ApplicationInput *app_in, Mesh *pm)
@@ -48,6 +48,8 @@ class BoundaryOpsDriver : public Driver {
         auto &md = pmesh->mesh_data.GetOrAdd("base", i);
         auto set = tl.AddTask(TaskID(0), boundary_ops::SetBlockValues, md.get());
         parthenon::AddBoundaryExchangeTasks(set, tl, md, true);
+        auto set_flux = tl.AddTask(TaskID(0), boundary_ops::SetFluxes, md.get());
+        parthenon::AddFluxCorrectionTasks(set_flux, tl, md, pmesh->multilevel);
       }
       tc.Execute();
     }
@@ -59,10 +61,20 @@ class BoundaryOpsDriver : public Driver {
                 << " buffer elements sent, " << varlen.wrong << " wrong" << std::endl;
     int naveraged = 0;
     nwrong = boundary_ops::CheckGhosts(pmesh, &naveraged);
-    if (parthenon::Globals::my_rank == 0)
+    int nshared[boundary_ops::kMaxShared];
+    std::uint64_t hash;
+    const int nwrong_flux = boundary_ops::CheckFluxes(pmesh, nshared, &hash);
+    if (parthenon::Globals::my_rank == 0) {
       std::cout << "boundary_ops: " << pmesh->nbtotal << " blocks, " << naveraged
                 << " ghost regions averaged over several neighbors, " << nwrong
                 << " wrong ghost cells" << std::endl;
+      std::cout << "flux combine: shared elements by number of blocks sharing them:";
+      for (int c = 2; c < boundary_ops::kMaxShared; ++c)
+        if (nshared[c] > 0) std::cout << " " << c << ":" << nshared[c];
+      std::cout << ", " << nwrong_flux << " wrong flux elements, hash " << std::hex
+                << hash << std::dec << std::endl;
+    }
+    nwrong += nwrong_flux;
     pouts->MakeOutputs(pmesh, pinput);
     nwrong += varlen.wrong;
     return nwrong == 0 ? DriverStatus::complete : DriverStatus::failed;
