@@ -5,8 +5,8 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
-- [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Add registered same-level flux-correction combine ops (`Metadata::RegisterFluxCorrectionOps<Combine>`)
-- [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`) and the `boundary_ops` example
+- [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Add registered same-level flux-correction combine ops (`Metadata::RegisterFluxCorrectionOps<Combine>`) and the library op `flux_correction_ops::AverageShared`
+- [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered same-level boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`), the library op `boundary_ops::AverageOverlapping` and the `boundary_ops` example
 
 
 ### Changed (changing behavior/API/variables/...)
