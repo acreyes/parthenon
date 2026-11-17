@@ -332,7 +332,8 @@ lane buffers.
   the same gid several times with different channels, and several neighbors
   on the same channel (e.g. all blocks around a node). The graph must be
   symmetric: if block ``a`` lists ``{b, ca, cb}``, block ``b`` lists
-  ``{a, cb, ca}``. Parthenon sorts each list by (``channel_me``, gid,
+  ``{a, cb, ca}``. Lane neighbors must be on the same refinement level
+  (as for registered boundary ops, cross-level exchanges are Parthenon's). Parthenon sorts each list by (``channel_me``, gid,
   ``channel_nb``) and stores it as ``NeighborBlock``\ s
   (``MeshBlock::GetLaneNeighbors(lane)``) with ``lane_channel`` and
   ``lane_nb_channel`` set and zero offsets.

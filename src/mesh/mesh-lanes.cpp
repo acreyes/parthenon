@@ -77,6 +77,9 @@ void Mesh::SetLaneNeighbors_(int lane) {
                             l.channel_me != lnbs[n - 1].channel_me ||
                             l.channel_nb != lnbs[n - 1].channel_nb,
                         "Duplicate lane neighbor of block " + std::to_string(pmb->gid));
+      // Lane ops run on same-level exchanges only, like registered boundary ops
+      PARTHENON_REQUIRE(loclist[l.gid].level() == pmb->loc.level(),
+                        "Lane neighbors must be on the same refinement level.");
       nbs.emplace_back(this, loclist[l.gid], loclist[l.gid], ranklist[l.gid], l.gid,
                        Kokkos::Array<int, 3>{0, 0, 0}, -1, -1, 0, 0,
                        pmb->block_coarsenings);
