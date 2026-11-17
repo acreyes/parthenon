@@ -262,14 +262,14 @@ MPI_Request SendSameToSame(int lid_recv, int dest_rank, Variable<Real> *var,
         "AMR SameToSame communication requires blocks to have at least two ghost zones");
     auto counter_subview = Kokkos::subview(var->data, std::make_pair(0, 2));
     auto counter_subview_h = Kokkos::create_mirror_view(HostMemSpace(), counter_subview);
-    counter_subview_h(0) = pmb->pmr->DerefinementCount();
+    counter_subview_h(0) = pmb->pmr ? pmb->pmr->DerefinementCount() : 0;
     counter_subview_h(1) = var->dealloc_count;
     Kokkos::deep_copy(counter_subview, counter_subview_h);
 
     PARTHENON_MPI_CHECK(MPI_Isend(var->data.data(), var->data.size(), MPI_PARTHENON_REAL,
                                   dest_rank, tag, comm, &req));
   } else {
-    var->com_state[0] = pmb->pmr->DerefinementCount();
+    var->com_state[0] = pmb->pmr ? pmb->pmr->DerefinementCount() : 0;
     var->com_state[1] = var->dealloc_count;
     PARTHENON_MPI_CHECK(
         MPI_Isend(var->com_state, 2, MPI_INT, dest_rank, tag, comm, &req));
@@ -294,7 +294,7 @@ bool TryRecvSameToSame(int lid_recv, int send_rank, Variable<Real> *var, MeshBlo
       auto counter_subview = Kokkos::subview(var->data, std::make_pair(0, 2));
       auto counter_subview_h =
           Kokkos::create_mirror_view_and_copy(HostMemSpace(), counter_subview);
-      pmb->pmr->DerefinementCount() = counter_subview_h(0);
+      if (pmb->pmr) pmb->pmr->DerefinementCount() = counter_subview_h(0);
       var->dealloc_count = counter_subview_h(1);
     } else {
       if (pmb->IsAllocated(var->label()) &&
@@ -302,7 +302,7 @@ bool TryRecvSameToSame(int lid_recv, int send_rank, Variable<Real> *var, MeshBlo
         pmb->DeallocateSparse(var->label());
       PARTHENON_MPI_CHECK(
           MPI_Recv(var->com_state, 2, MPI_INT, send_rank, tag, comm, MPI_STATUS_IGNORE));
-      pmb->pmr->DerefinementCount() = var->com_state[0];
+      if (pmb->pmr) pmb->pmr->DerefinementCount() = var->com_state[0];
       var->dealloc_count = var->com_state[1];
     }
   }
@@ -350,9 +350,12 @@ namespace {
  * blocks of equal total cost on each rank.
  *
  * @param costlist (Input) A map of global block ID to a relative weight.
+ * @param groups (Input) Empty, or a group label per global block ID: a rank boundary is
+ * only placed where the label changes.
  * @param ranklist (Output) A map of global block ID to ranks.
  */
-void AssignBlocks(std::vector<double> const &costlist, std::vector<int> &ranklist) {
+void AssignBlocks(std::vector<double> const &costlist, std::vector<int> const &groups,
+                  std::vector<int> &ranklist) {
   ranklist.resize(costlist.size());
 
   double const total_cost = std::accumulate(costlist.begin(), costlist.end(), 0.0);
@@ -372,7 +375,17 @@ void AssignBlocks(std::vector<double> const &costlist, std::vector<int> &ranklis
     }
     my_cost += costlist[block_id];
     ranklist[block_id] = rank;
-    if (my_cost >= target_cost && rank > 0) {
+    const bool can_cut =
+        groups.empty() || block_id == 0 || groups[block_id] != groups[block_id - 1];
+    bool cut = my_cost >= target_cost;
+    if (!cut && !groups.empty() && can_cut && block_id > 0) {
+      // cut here if that is closer to the target than after the next group
+      double next = 0.0;
+      for (int b = block_id - 1; b >= 0 && groups[b] == groups[block_id - 1]; --b)
+        next += costlist[b];
+      cut = my_cost + next - target_cost > target_cost - my_cost;
+    }
+    if (cut && rank > 0 && can_cut) {
       rank--;
       remaining_cost -= my_cost;
       my_cost = 0.0;
@@ -399,6 +412,7 @@ void UpdateBlockList(std::vector<int> const &ranklist, std::vector<int> &nslist,
 //----------------------------------------------------------------------------------------
 // \brief Calculate distribution of MeshBlocks based on the cost list
 void Mesh::CalculateLoadBalance(std::vector<double> const &costlist,
+                                const std::vector<LogicalLocation> &locs,
                                 std::vector<int> &ranklist, std::vector<int> &nslist,
                                 std::vector<int> &nblist) {
   PARTHENON_INSTRUMENT
@@ -410,12 +424,26 @@ void Mesh::CalculateLoadBalance(std::vector<double> const &costlist,
   double const mincost = min_max.first == costlist.begin() ? 0.0 : *min_max.first;
   double const maxcost = min_max.second == costlist.begin() ? 0.0 : *min_max.second;
 
+  // User groups of consecutive gids that must not be split across ranks
+  std::vector<int> groups;
+  if (LoadBalanceGroups != nullptr) {
+    groups = LoadBalanceGroups(this, locs);
+    PARTHENON_REQUIRE_THROWS(groups.empty() || groups.size() == total_blocks,
+                             "LoadBalanceGroups must return one label per block");
+  }
+
   // Assigns blocks to ranks on a rougly cost-equal basis.
-  AssignBlocks(costlist, ranklist);
+  AssignBlocks(costlist, groups, ranklist);
 
   // Updates nslist with the ID of the starting block on each rank and the count of blocks
   // on each rank.
   UpdateBlockList(ranklist, nslist, nblist);
+  if (!groups.empty() && total_blocks >= Globals::nranks) {
+    for (int rank = 0; rank < Globals::nranks; ++rank)
+      PARTHENON_REQUIRE_THROWS(nblist[rank] > 0,
+                               "LoadBalanceGroups: groups too large for the number of "
+                               "ranks, a rank received no block");
+  }
 
 #ifdef MPI_PARALLEL
   if (total_blocks % (Globals::nranks) != 0 && !adaptive && !lb_flag_ &&
@@ -714,7 +742,7 @@ void Mesh::RedistributeAndRefineMeshBlocks(ParameterInput *pin, ApplicationInput
   } // Construct new list region
 
   // Calculate new load balance
-  CalculateLoadBalance(newcost, newrank, nslist, nblist);
+  CalculateLoadBalance(newcost, newloc, newrank, nslist, nblist);
 
   int nbs = nslist[Globals::my_rank];
   int nbe = nbs + nblist[Globals::my_rank] - 1;
@@ -1003,6 +1031,187 @@ void Mesh::RedistributeAndRefineMeshBlocks(ParameterInput *pin, ApplicationInput
     // Initialize the "base" MeshData object
     mesh_data.Add("base", GetBasePartition());
   } // AMR Recv and unpack data
+
+  ResetLoadBalanceVariables();
+}
+
+namespace {
+// Fails unless every rank passed the same vector
+void RequireSameOnAllRanks(const std::vector<int> &v, const char *what) {
+#ifdef MPI_PARALLEL
+  std::uint64_t h = 0xcbf29ce484222325ULL ^ v.size();
+  for (const int x : v)
+    h = (h ^ static_cast<std::uint32_t>(x)) * 0x100000001b3ULL;
+  // min over ranks of h and of ~h, i.e. the min and (complemented) max of h
+  std::uint64_t mm[2] = {h, ~h};
+  PARTHENON_MPI_CHECK(
+      MPI_Allreduce(MPI_IN_PLACE, mm, 2, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD));
+  PARTHENON_REQUIRE_THROWS(mm[0] == ~mm[1], std::string(what) +
+                                                ": the permutation differs between "
+                                                "ranks; it must be computed from global "
+                                                "data");
+#endif
+}
+
+} // namespace
+
+//----------------------------------------------------------------------------------------
+// \brief call the user block permutation at its cadence
+
+bool Mesh::PermuteBlocksIfDue(ParameterInput *pin, ApplicationInput *app_in,
+                              SimTime const &tm) {
+  if (permute_interval_ <= 0 || BlockPermutation == nullptr ||
+      tm.ncycle % permute_interval_ != 0)
+    return false;
+  const std::vector<int> new_gid_of_old = BlockPermutation(this, pin, tm);
+  RequireSameOnAllRanks(new_gid_of_old, "BlockPermutation");
+  if (new_gid_of_old.empty()) return false;
+  PermuteBlocks(new_gid_of_old, pin, app_in);
+  return true;
+}
+
+//----------------------------------------------------------------------------------------
+// \brief move the content of block old to gid new_gid_of_old[old]
+
+void Mesh::PermuteBlocks(const std::vector<int> &new_gid_of_old, ParameterInput *pin,
+                         ApplicationInput *app_in) {
+  PARTHENON_INSTRUMENT
+  PARTHENON_REQUIRE_THROWS(new_gid_of_old.size() == nbtotal,
+                           "PermuteBlocks: new_gid_of_old must have one entry per block");
+  PARTHENON_REQUIRE_THROWS(resolved_packages->AllSwarms().empty(),
+                           "PermuteBlocks does not move swarms");
+  std::vector<int> old_gid_of_new(nbtotal, -1);
+  for (int o = 0; o < nbtotal; ++o) {
+    const int n = new_gid_of_old[o];
+    PARTHENON_REQUIRE_THROWS(0 <= n && n < nbtotal && old_gid_of_new[n] < 0,
+                             "PermuteBlocks: new_gid_of_old is not a permutation");
+    old_gid_of_new[n] = o;
+  }
+  RequireSameOnAllRanks(new_gid_of_old, "PermuteBlocks");
+  const int me = Globals::my_rank;
+
+  // Costs follow the blocks; ranks are recomputed for the permuted costs and groups
+  UpdateCostList();
+  GatherCostListAndCheckBalance();
+  std::vector<double> newcost(nbtotal);
+  for (int o = 0; o < nbtotal; ++o)
+    newcost[new_gid_of_old[o]] = costlist[o];
+  std::vector<int> newrank, newnslist, newnblist;
+  CalculateLoadBalance(newcost, loclist, newrank, newnslist, newnblist);
+
+  mesh_data.clear();
+  const int onbs = nslist[me];
+  const int onbe = onbs + nblist[me] - 1;
+  const int nbs = newnslist[me];
+  const int nbe = nbs + newnblist[me] - 1;
+
+#ifdef MPI_PARALLEL
+  // Send the content leaving this rank (as load balancing does)
+  std::vector<MPI_Request> send_reqs;
+  for (int o = onbs; o <= onbe; ++o) {
+    const int n = new_gid_of_old[o];
+    if (newrank[n] == me) continue;
+    auto pb = FindMeshBlock(o);
+    for (auto &var : pb->vars_cc_)
+      send_reqs.emplace_back(SendSameToSame(n - newnslist[newrank[n]], newrank[n],
+                                            var.get(), pb.get(), this));
+  }
+#endif
+
+  // New block list: a block whose content stays on its gid and rank is kept, the others
+  // are made anew and get their content copied on this rank or received below
+  // Copies the remeshed variables (and sparse allocation state) of a block on this rank
+  auto copy_content = [](MeshBlock *src, MeshBlock *dst) {
+    for (auto &var : dst->vars_cc_) {
+      const auto &label = var->label();
+      auto src_var = src->meshblock_data.Get()->GetVarPtr(label);
+      if (src_var->IsAllocated()) {
+        if (!dst->IsAllocated(label)) dst->AllocateSparse(label);
+        var->data.DeepCopy(src_var->data);
+      } else if (dst->IsAllocated(label) &&
+                 !var->metadata().IsSet(Metadata::ForceAllocOnNewBlocks)) {
+        dst->DeallocateSparse(label);
+      }
+      var->dealloc_count = src_var->dealloc_count;
+    }
+    if (src->pmr && dst->pmr)
+      dst->pmr->DerefinementCount() = src->pmr->DerefinementCount();
+  };
+  BlockList_t new_block_list(nbe - nbs + 1);
+  RegionSize block_size = GetDefaultBlockSize();
+  for (int n = nbs; n <= nbe; ++n) {
+    const int o = old_gid_of_new[n];
+    if (o == n && ranklist[o] == me) {
+      new_block_list[n - nbs] = FindMeshBlock(o);
+      continue;
+    }
+    BoundaryFlag block_bcs[6];
+    SetBlockSizeAndBoundaries(loclist[n], block_size, block_bcs);
+    new_block_list[n - nbs] =
+        MeshBlock::Make(n, n - nbs, loclist[n], block_size, block_bcs, this, pin, app_in,
+                        packages, resolved_packages, gflag, newcost[n]);
+    if (ranklist[o] == me)
+      copy_content(FindMeshBlock(o).get(), new_block_list[n - nbs].get());
+  }
+  Kokkos::fence();
+
+  auto old_block_list = std::move(block_list);
+  block_list = std::move(new_block_list);
+  for (int n = nbs; n <= nbe; ++n) {
+    block_list[n - nbs]->gid = n;
+    block_list[n - nbs]->lid = n - nbs;
+  }
+  BuildBlockPartitions(GridIdentifier::leaf());
+
+#ifdef MPI_PARALLEL
+  // Receive the content arriving from other ranks
+  if (block_list.size() > 0) {
+    std::vector<bool> finished((nbe - nbs + 1) * block_list[0]->vars_cc_.size(), false);
+    bool all_received;
+    int niter = 0;
+    do {
+      all_received = true;
+      niter++;
+      int idx = 0;
+      for (int n = nbs; n <= nbe; ++n) {
+        const int o = old_gid_of_new[n];
+        auto pb = block_list[n - nbs];
+        for (auto &var : pb->vars_cc_) {
+          if (ranklist[o] != me && !finished[idx])
+            finished[idx] =
+                TryRecvSameToSame(n - nbs, ranklist[o], var.get(), pb.get(), this);
+          all_received = (ranklist[o] == me || finished[idx]) && all_received;
+          idx++;
+        }
+      }
+    } while (!all_received && niter < 1e7);
+    if (!all_received) PARTHENON_FAIL("PermuteBlocks receive failed");
+  }
+  Kokkos::fence();
+  if (send_reqs.size() != 0)
+    PARTHENON_MPI_CHECK(
+        MPI_Waitall(send_reqs.size(), send_reqs.data(), MPI_STATUSES_IGNORE));
+#endif
+  old_block_list.clear();
+
+  ranklist = std::move(newrank);
+  nslist = std::move(newnslist);
+  nblist = std::move(newnblist);
+  costlist = std::move(newcost);
+  BuildGMGBlockLists(pin, app_in);
+
+  for (auto &pmb : block_list) {
+    if (pmb->InitMeshBlockUserData != nullptr) pmb->InitMeshBlockUserData(pmb.get(), pin);
+  }
+
+  // Rebuild neighbors, buffers and provider lanes, then fill ghosts and derived fields
+  SetMeshBlockNeighbors(this, GridIdentifier::leaf(), block_list, ranklist);
+  SetGMGNeighbors();
+  BuildTagMapAndBoundaryBuffers();
+  PreCommFillDerived();
+  CommunicateBoundaries();
+  FillDerived();
+  mesh_data.Add("base", GetBasePartition());
 
   ResetLoadBalanceVariables();
 }

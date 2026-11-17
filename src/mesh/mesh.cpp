@@ -211,6 +211,12 @@ Mesh::Mesh(ParameterInput *pin, ApplicationInput *app_in, Packages_t &packages,
   if (app_in->UserWorkAfterLoop != nullptr) {
     UserWorkAfterLoop = app_in->UserWorkAfterLoop;
   }
+  if (app_in->MeshBlockPermutation != nullptr) {
+    BlockPermutation = app_in->MeshBlockPermutation;
+  }
+  if (app_in->LoadBalanceGroups != nullptr) {
+    LoadBalanceGroups = app_in->LoadBalanceGroups;
+  }
 
   // Default root level, may be overwritten by another constructor
   root_level = 0;
@@ -419,7 +425,7 @@ void Mesh::BuildBlockList(ParameterInput *pin, ApplicationInput *app_in,
   // initialize cost array with the simplest estimate; all the blocks are equal
   costlist = std::vector<double>(nbtotal, 1.0);
 
-  CalculateLoadBalance(costlist, ranklist, nslist, nblist);
+  CalculateLoadBalance(costlist, loclist, ranklist, nslist, nblist);
 
   // Output MeshBlock list and quit (mesh test only); do not create meshes
   if (mesh_test > 0) {
@@ -1101,6 +1107,9 @@ void Mesh::RegisterLoadBalancing_(ParameterInput *pin) {
   lb_interval_ = pin->GetOrAddInteger(
       "parthenon/loadbalancing", "interval", 10,
       "how frequently load balancing is performed if the mesh does not change");
+  permute_interval_ = pin->GetOrAddInteger(
+      "parthenon/loadbalancing", "permute_interval", 0,
+      "cycles between calls of the user block permutation (0 = never)");
 }
 
 // Create separate communicators for all variables. Needs to be done at the mesh
