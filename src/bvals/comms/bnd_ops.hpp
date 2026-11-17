@@ -51,7 +51,10 @@ using BndOpIdxHost_t = typename BndOpIdx_t::host_mirror_type;
 
 // A registered pack or unpack op. Runs on host once per bucket and launches its own
 // kernels. Arguments: the MeshData being exchanged, the cache's BndInfo array (device
-// and host), the bucket's indices into it (device and host) and the bucket size.
+// and host), the bucket's indices into it (device and host) and the bucket size. A
+// bucket holds same-level boundaries only; boundaries to coarser or finer neighbors take
+// the default copy and the variable's prolongation/restriction ops. Ready-made ops are
+// in bvals/comms/bnd_ops_library.hpp.
 using BoundaryOp_t =
     std::function<void(MeshData<Real> *, const BndInfoArr_t &, const BndInfoArrHost_t &,
                        const BndOpIdx_t &, const BndOpIdxHost_t &, std::size_t)>;

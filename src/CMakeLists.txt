@@ -118,6 +118,8 @@ add_library(parthenon
   bvals/comms/bnd_id.hpp
   bvals/comms/bnd_info.cpp
   bvals/comms/bnd_info.hpp
+  bvals/comms/bnd_ops.hpp
+  bvals/comms/bnd_ops_library.hpp
   bvals/comms/boundary_communication.cpp
   bvals/comms/calc_indices.hpp
   bvals/comms/coalesced_buffers.cpp

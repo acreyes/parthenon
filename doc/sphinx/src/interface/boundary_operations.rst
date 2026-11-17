@@ -42,6 +42,20 @@ a struct with one static function:
 
 The ops are hashed by their types (like refinement ops), so all variables that
 register the same pair share one op set.
+Members of a sparse pool inherit the ops registered on the pool's metadata.
+
+Same-level only
+---------------
+
+Registered ops handle the exchanges between blocks on the **same refinement
+level** only. Boundaries to a coarser or finer neighbor always take
+Parthenon's default path: restriction into the send buffer, the default pack
+and unpack, and prolongation of the received coarse data, using the
+variable's registered prolongation and restriction operations (see
+:doc:`refinement_operations`). Customise cross-level ghost fills with those
+operations, not with boundary ops. An op therefore never sees a coarse
+buffer, and every buffer in its bucket has the shape of a same-level ghost
+region.
 
 Calling sequence
 ----------------
@@ -75,46 +89,49 @@ buffers.
   (it is never sent as a null buffer of a sparse variable).
 - An op runs on host and launches its own kernels in ``DevExecSpace()``. It
   should write only its own variables (``Unpack``) or buffers (``Pack``).
-- Ops act on the variable's own ghost exchange for every ``BoundaryType`` it
-  takes part in (including GMG exchanges), not on flux correction (see
-  `Flux-correction combine ops`_).
+- Ops act on the variable's own same-level ghost exchange for every
+  ``BoundaryType`` it takes part in (including GMG exchanges), not on flux
+  correction (see `Flux-correction combine ops`_).
 - Variables without registered ops are not affected: if no variable in a
   cache has ops, the cache holds no op buckets and the default kernels run
   over all boundaries exactly as before.
+
+Library ops
+-----------
+
+``bvals/comms/bnd_ops_library.hpp`` provides ready-made ops in
+``parthenon::boundary_ops``. They launch device kernels and are deterministic:
+their result is bitwise independent of the number of ranks and of the order in
+which buffers arrive.
+
+- ``AverageOverlapping`` (unpack): every ghost element gets the mean of all
+  same-level buffers that land on it, summed in ascending sender gid. On a
+  regular mesh each ghost region has one sender and this is the default copy.
+  Where several neighbors map onto one region, e.g. the node neighbors of a
+  node of valence other than four in a 2D forest, the default copy would keep
+  whichever buffer is unpacked last. Consecutive bucket entries with the same
+  (``block``, variable, ``offsets``) are one region; one team per region
+  zeroes it, adds the buffers one at a time in bucket order and divides by
+  their number. Unallocated (sparse) sender buffers count as the variable's
+  sparse default value.
+
+.. code:: c++
+
+   #include <bvals/comms/bnd_ops_library.hpp>
+
+   m.RegisterBoundaryOps<parthenon::boundary_ops::AverageOverlapping>();
 
 Example
 -------
 
 ``example/boundary_ops`` builds a 2D forest of fans whose central nodes have
-valence 3 to 6. Its variable registers ``AverageOverlappingGhosts``, which
-fills each ghost region with the mean of all buffers that map onto it, summed
-in ascending sender gid:
-
-.. code:: c++
-
-   // Consecutive entries with the same (block, offsets) fill one ghost region.
-   Kokkos::parallel_for(
-       "AverageOverlappingGhosts",
-       Kokkos::TeamPolicy<>(parthenon::DevExecSpace(), nregions, Kokkos::AUTO),
-       KOKKOS_LAMBDA(parthenon::team_mbr_t team) {
-         const int first = region_start(team.league_rank());
-         const int last = region_start(team.league_rank() + 1);
-         for (int n = first; n < last; ++n) {
-           auto &bi = info(idx(n));
-           // ... map buffer element m to ghost cell (kl, jl, il) as the default
-           // unpack does, then
-           ghost = (n == first) ? bi.buf(m) : ghost + bi.buf(m);
-           if (n == last - 1) ghost /= count;
-           team.team_barrier();
-         }
-       });
-
-At valence 5 and 6 two or three node neighbors share a corner ghost region of
-the blocks at the central node; with the default copy the region would hold
-whichever buffer was unpacked last. The regression test ``boundary_ops`` runs
-the example on 1, 2 and 4 ranks, checks every ghost region against the
-neighbor average and requires the ghost zones of all runs to be bitwise
-identical.
+valence 3 to 6. A dense variable and a member of a sparse pool both register
+``AverageOverlapping``. At valence 5 and 6 two or three node neighbors share a
+corner ghost region of the blocks at the central node; with the default copy
+the region would hold whichever buffer was unpacked last. The example checks
+every ghost region of both variables against the neighbor average. The
+regression test ``boundary_ops`` runs it on 1, 2 and 4 ranks and requires the
+ghost zones of all runs to be bitwise identical.
 
 Flux-correction combine ops
 ---------------------------
@@ -174,18 +191,33 @@ are hashed by type and enumerated in the ``StateDescriptor``
 - Variables without a combine op are not affected: they exchange no
   same-level flux buffers, and if no variable has a combine op the
   flux-correction caches hold no buckets and run the default kernels as
-  before. Sparse pools do not carry combine ops yet.
+  before. Members of a sparse pool inherit the combine op of the pool's
+  metadata.
 
-The ``boundary_ops`` example registers ``AverageSharedFluxes`` for the face
-flux of a cell variable and the edge flux of a face variable. Every block sets
-its fluxes to block-dependent values; after the exchange every shared element
-holds the mean over all blocks sharing it, summed in ascending gid: two at
-faces and the nodes along edges, and three to six at the central nodes of the
-fans. The op runs one team per buffer; the first buffer of a (block, variable)
-group that holds an element collects the local value and the value of every
-buffer of the group holding it, sorts them by gid and writes the mean. The
-example checks every shared element on host, and the regression test
-requires the fluxes of the 1, 2 and 4 rank runs to be bitwise identical.
+Library op ``flux_correction_ops::AverageShared`` (in
+``bvals/comms/bnd_ops_library.hpp``): every shared element gets the mean of
+the local value and the values of all same-level neighbors sharing it, summed
+in ascending gid, so every block holds the same bits (up to the sign of its
+frame) on any number of ranks. It runs one team per buffer; the first buffer of
+a (block, variable) group that holds an element collects the local value and
+the value of every buffer of the group holding it, sorts them by gid and
+writes the mean. Up to ``AverageShared::kMaxShared`` (16) blocks may share an
+element.
+
+.. code:: c++
+
+   #include <bvals/comms/bnd_ops_library.hpp>
+
+   m.RegisterFluxCorrectionOps<parthenon::flux_correction_ops::AverageShared>();
+
+The ``boundary_ops`` example registers ``AverageShared`` for the face flux of
+a cell variable, the edge flux of a face variable and the face flux of a
+sparse-pool member. Every block sets its fluxes to block-dependent values;
+after the exchange every shared element holds the mean over all blocks sharing
+it: two at faces and the nodes along edges, and three to six at the central
+nodes of the fans. The example checks every shared element on host, and the
+regression test requires the fluxes of the 1, 2 and 4 rank runs to be bitwise
+identical.
 
 Provider lanes
 --------------
@@ -276,7 +308,10 @@ neighbor of the other members, on channel ``(layer + gid) % 3``, so the two
 ends of a channel use different ids), and a ring lane over a shuffled block
 order. Per-block records are exchanged with an unpack op that sums the
 buffers of each channel in ascending gid, and a face flux with a combine op
-that replaces each block's candidate by the group mean. Before cycle 2 the
+that replaces each block's candidate by the group mean. The library ops
+``boundary_ops::AverageOverlapping`` and ``flux_correction_ops::AverageShared``
+locate elements through the geometric index sets and coordinate transforms of a
+``BndInfo``, which lane buffers do not have, so the example keeps its own ops. Before cycle 2 the
 groups are reshuffled and the lane rebuilt. Every cycle is checked bitwise on
 host against the graph; the results are identical on 1 to 4 ranks, and
 ``provider_lanes/rebuild=false`` shows the check failing.
