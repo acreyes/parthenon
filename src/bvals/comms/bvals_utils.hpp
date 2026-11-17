@@ -25,6 +25,7 @@
 #include <random>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -229,6 +230,34 @@ inline auto CheckReceiveBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md
   return std::make_tuple(rebuild, nbound);
 }
 
+// Fill the op buckets of a cache from (op id, sort keys..., ibuf) tuples. Each bucket is
+// sorted by its keys, so ops see their boundaries in a partition-independent order.
+template <class KEY>
+inline void BuildBndOpsCache(BndOpsCache_t *pops, std::vector<KEY> &op_keys,
+                             const std::vector<std::size_t> &default_bufs,
+                             std::size_t nfuncs, int nbound) {
+  auto &ops = *pops;
+  ops.clear();
+  if (op_keys.empty()) return;
+  std::sort(op_keys.begin(), op_keys.end());
+  ops.nuser = op_keys.size();
+  ops.ndefault = default_bufs.size();
+  ops.buffer_subset_sizes.resize(nfuncs, 0);
+  ops.buffer_subsets = ParArray2D<std::size_t>("bnd_ops_subsets", nfuncs, nbound);
+  ops.buffer_subsets_h = Kokkos::create_mirror_view(ops.buffer_subsets);
+  for (const auto &key : op_keys) {
+    const std::size_t id = std::get<0>(key);
+    ops.buffer_subsets_h(id, ops.buffer_subset_sizes[id]++) = std::get<6>(key);
+  }
+  Kokkos::deep_copy(ops.buffer_subsets, ops.buffer_subsets_h);
+  ops.default_subset = ParArray1D<std::size_t>("bnd_ops_default_subset",
+                                               std::max<std::size_t>(1, ops.ndefault));
+  auto default_h = Kokkos::create_mirror_view(ops.default_subset);
+  for (std::size_t i = 0; i < ops.ndefault; ++i)
+    default_h(i) = default_bufs[i];
+  Kokkos::deep_copy(ops.default_subset, default_h);
+}
+
 using F_BND_INFO = std::function<BndInfo(MeshBlock *pmb, const NeighborBlock &nb,
                                          std::shared_ptr<Variable<Real>> v,
                                          CommBuffer<buf_pool_t<Real>::owner_t> *buf)>;
@@ -254,12 +283,39 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   StateDescriptor *pkg = (pmesh->resolved_packages).get();
   cache.prores_cache.Initialize(nbound, pkg);
 
+  // Registered boundary ops act on the variable's own buffers, not on flux correction
+  constexpr bool flx_bound =
+      BOUND_TYPE == BoundaryType::flxcor_send || BOUND_TYPE == BoundaryType::flxcor_recv;
+  const bool use_ops = !flx_bound && pkg->NumBoundaryFuncs() > 0;
+  std::unordered_map<int, int> block_index;
+  for (int b = 0; b < md->NumBlocks(); ++b)
+    block_index[md->GetBlockData(b)->GetBlockPointer()->gid] = b;
+  // (op id, block, variable label, offset index, neighbor gid, iteration order, ibuf)
+  using op_key_t = std::tuple<std::size_t, int, std::string, int, int, int, std::size_t>;
+  std::vector<op_key_t> op_keys;
+  std::vector<std::size_t> default_bufs;
+
   int ibound = 0;
   ForEachBoundary<BOUND_TYPE>(
       md, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
         // bnd_info
         const std::size_t ibuf = cache.idx_vec[ibound];
         cache.bnd_info_h(ibuf) = BndInfoCreator(pmb, nb, v, cache.buf_vec[ibuf]);
+        auto &bi = cache.bnd_info_h(ibuf);
+        bi.block = block_index.at(pmb->gid);
+        bi.send_gid = SENDER ? pmb->gid : nb.gid;
+        bi.recv_gid = SENDER ? nb.gid : pmb->gid;
+        bi.offsets = nb.offsets;
+
+        if (use_ops) {
+          const auto &funcs = v->GetBoundaryFunctions();
+          if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack())) {
+            op_keys.emplace_back(pkg->BoundaryFuncID(funcs), bi.block, v->label(),
+                                 nb.offsets.GetIdx(), nb.gid, ibound, ibuf);
+          } else {
+            default_bufs.push_back(ibuf);
+          }
+        }
 
         // subsets ordering is same as in cache.bnd_info
         // RefinementFunctions_t owns all relevant functionality, so
@@ -271,6 +327,8 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
       });
   Kokkos::deep_copy(cache.bnd_info, cache.bnd_info_h);
   cache.prores_cache.CopyToDevice();
+  BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, pkg->NumBoundaryFuncs(),
+                   nbound);
 }
 
 } // namespace parthenon

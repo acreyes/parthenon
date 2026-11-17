@@ -81,6 +81,16 @@ struct RefinementFunctionMaps {
   std::size_t next_refinement_id_ = 0;
 };
 
+/// A unique enumeration of the registered boundary op sets (see
+/// Metadata::RegisterBoundaryOps), used to bucket boundary buffers by op in the
+/// boundary communication caches.
+struct BoundaryFunctionMaps {
+  void Register(const Metadata &m);
+  std::size_t size() const noexcept { return funcs_to_ids.size(); }
+  std::unordered_map<BoundaryFunctions_t, std::size_t, BoundaryFunctionsHasher>
+      funcs_to_ids;
+};
+
 /// The state metadata descriptor class.
 ///
 /// Each State descriptor has a label, associated parameters, and
@@ -360,6 +370,13 @@ class StateDescriptor {
     return RefinementFuncID(m.GetRefinementFunctions());
   }
   std::size_t NumRefinementFuncs() const noexcept { return refinementFuncMaps_.size(); }
+  std::size_t BoundaryFuncID(const BoundaryFunctions_t &funcs) const noexcept {
+    return boundaryFuncMaps_.funcs_to_ids.at(funcs);
+  }
+  std::size_t NumBoundaryFuncs() const noexcept { return boundaryFuncMaps_.size(); }
+  const auto &BoundaryFncsToIDs() const noexcept {
+    return boundaryFuncMaps_.funcs_to_ids;
+  }
   const auto &RefinementFncsToIDs() const noexcept {
     return refinementFuncMaps_.funcs_to_ids;
   }
@@ -569,6 +586,7 @@ class StateDescriptor {
   Dictionary<Dictionary<Metadata>> swarmValueMetadataMap_;
 
   RefinementFunctionMaps refinementFuncMaps_;
+  BoundaryFunctionMaps boundaryFuncMaps_;
   Dictionary<MeshDataDescriptor> submeshdata_map_;
   std::map<TopologicalType, std::size_t> num_scratch_;
 };
