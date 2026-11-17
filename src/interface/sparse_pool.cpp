@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #include <memory>
 #include <optional>
@@ -72,6 +73,8 @@ MakeSparseVarMetadataImpl(Metadata *in, const std::vector<int> &shape,
       component_labels.size() > 0 ? component_labels : in->getComponentLabels(),
       in->getAssociated(), in->GetRefinementFunctions(),
       flx_metadata->GetRefinementFunctions());
+  // registered boundary and flux-correction ops are not constructor arguments
+  this_metadata->CopyRegisteredOps(*in);
 
   this_metadata->SetSparseThresholds(in->GetAllocationThreshold(),
                                      in->GetDeallocationThreshold(),
