@@ -118,6 +118,10 @@ class Variable {
   inline const BoundaryFunctions_t &GetBoundaryFunctions() const {
     return m_.GetBoundaryFunctions();
   }
+  inline bool HasFluxCorrectionOps() const { return m_.HasFluxCorrectionOps(); }
+  inline const FluxCorrectionFunctions_t &GetFluxCorrectionFunctions() const {
+    return m_.GetFluxCorrectionFunctions();
+  }
 
   /// Get Sparse ID (InvalidSparseID if not sparse)
   inline int GetSparseID() const { return IsSparse() ? sparse_id_ : InvalidSparseID; }

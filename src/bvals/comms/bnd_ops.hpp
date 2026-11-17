@@ -93,8 +93,40 @@ struct BoundaryFunctions_t {
   std::string label_;
 };
 
+// Type-erased flux-correction combine op of a flux variable (see
+// Metadata::RegisterFluxCorrectionOps), identified (and hashed) by the typeid of the op.
+// The op runs in SetBounds<flxcor_recv> on the same-level flux-correction boundaries of
+// the variable, in place of the default overwrite.
+struct FluxCorrectionFunctions_t {
+  FluxCorrectionFunctions_t() = default;
+  explicit FluxCorrectionFunctions_t(const std::string &label) : label_(label) {}
+
+  template <class CombineOp>
+  static FluxCorrectionFunctions_t RegisterOps() {
+    FluxCorrectionFunctions_t funcs(typeid(CombineOp).name());
+    funcs.combine = [](MeshData<Real> *md, const BndInfoArr_t &info,
+                       const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
+                       const BndOpIdxHost_t &idx_h, std::size_t nbuffers) {
+      CombineOp::Combine(md, info, info_h, idx, idx_h, nbuffers);
+    };
+    return funcs;
+  }
+
+  const std::string &label() const { return label_; }
+  bool operator==(const FluxCorrectionFunctions_t &other) const {
+    return label() == other.label();
+  }
+
+  BoundaryOp_t combine;
+
+ private:
+  std::string label_;
+};
+
+// Hashes any of the op sets above by their label
 struct BoundaryFunctionsHasher {
-  auto operator()(const BoundaryFunctions_t &f) const {
+  template <class Funcs>
+  auto operator()(const Funcs &f) const {
     return std::hash<std::string>{}(f.label());
   }
 };

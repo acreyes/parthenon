@@ -598,6 +598,33 @@ class Metadata {
                              "At least one of the boundary ops must be non-default");
   }
 
+  // Registered flux-correction combine op. CombineOp::Combine (same arguments as a
+  // boundary Unpack op) runs in SetBounds<BoundaryType::flxcor_recv> and is handed every
+  // flux-correction boundary of this flux between blocks on the same refinement level,
+  // which are exchanged only for variables with this op: on each element shared with a
+  // same-level neighbor (shared face of a face flux; shared faces and edges of an edge
+  // flux; shared faces, edges and nodes of a node flux) the variable holds the local
+  // value and the bucket holds one buffer from every neighbor sharing it. Boundaries to
+  // other levels keep the default restriction and overwrite. The bucket is sorted as for
+  // RegisterBoundaryOps. Called on a variable with fluxes, the op is registered on its
+  // flux variable; otherwise the variable must itself be a flux.
+  const FluxCorrectionFunctions_t &GetFluxCorrectionFunctions() const {
+    return flux_correction_funcs_;
+  }
+  bool HasFluxCorrectionOps() const { return !flux_correction_funcs_.label().empty(); }
+  template <class CombineOp>
+  void RegisterFluxCorrectionOps() {
+    auto funcs = FluxCorrectionFunctions_t::RegisterOps<CombineOp>();
+    if (IsSet(WithFluxes)) {
+      flux_metadata->flux_correction_funcs_ = funcs;
+    } else {
+      PARTHENON_REQUIRE_THROWS(IsSet(Flux),
+                               "Variable must be a flux or have fluxes to accept "
+                               "flux-correction ops");
+      flux_correction_funcs_ = funcs;
+    }
+  }
+
   // Operators
   bool HasSameFlags(const Metadata &b) const;
 
@@ -640,6 +667,7 @@ class Metadata {
   /// the attribute flags that are set for the class
   refinement::RefinementFunctions_t refinement_funcs_;
   BoundaryFunctions_t boundary_funcs_;
+  FluxCorrectionFunctions_t flux_correction_funcs_;
   std::vector<bool> bits_;
   std::vector<int> shape_ = {1};
   std::vector<std::string> component_labels_ = {};

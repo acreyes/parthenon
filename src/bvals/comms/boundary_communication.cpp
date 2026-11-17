@@ -209,18 +209,26 @@ void UnpackDefaultBuffers(const BndInfoArr_t &bnd_info,
       });
 }
 
-// Call the registered pack (send) or unpack (receive) op of every bucket of the cache.
+// Call the registered op of every bucket of the cache: pack when sending, unpack when
+// receiving ghosts, combine when receiving flux corrections.
+template <BoundaryType bound_type>
 void ApplyBoundaryOps(MeshData<Real> *md, BvarsSubCache_t *pcache, bool send) {
   auto &cache = *pcache;
   const auto &ops = cache.bnd_ops;
   StateDescriptor *pkg = md->GetMeshPointer()->resolved_packages.get();
-  for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs()) {
+  auto apply = [&](const BoundaryOp_t &op, std::size_t id) {
     const std::size_t n = ops.buffer_subset_sizes[id];
-    if (n == 0) continue;
+    if (n == 0) return;
     BndOpIdx_t subset = Kokkos::subview(ops.buffer_subsets, id, Kokkos::ALL());
     BndOpIdxHost_t subset_h = Kokkos::subview(ops.buffer_subsets_h, id, Kokkos::ALL());
-    const auto &op = send ? funcs.pack : funcs.unpack;
     op(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n);
+  };
+  if constexpr (bound_type == BoundaryType::flxcor_recv) {
+    for (const auto &[funcs, id] : pkg->FluxCorrectionFncsToIDs())
+      apply(funcs.combine, id);
+  } else {
+    for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs())
+      apply(send ? funcs.pack : funcs.unpack, id);
   }
 }
 } // namespace
@@ -296,7 +304,7 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
       PackDefaultBuffers<bound_type, true>(
           bnd_info, sending_nonzero_flags, cache.bnd_ops.default_subset,
           cache.bnd_ops.ndefault, nteams_per_buffer, work_chunk_size);
-    ApplyBoundaryOps(md.get(), &cache, true);
+    ApplyBoundaryOps<bound_type>(md.get(), &cache, true);
   }
 
   // Send buffers
@@ -472,7 +480,7 @@ TaskStatus SetBounds(std::shared_ptr<MeshData<Real>> &md) {
       UnpackDefaultBuffers<bound_type, true>(bnd_info, cache.bnd_ops.default_subset,
                                              cache.bnd_ops.ndefault, nteams_per_buffer,
                                              work_chunk_size);
-    ApplyBoundaryOps(md.get(), &cache, false);
+    ApplyBoundaryOps<bound_type>(md.get(), &cache, false);
   }
 #ifdef MPI_PARALLEL
   Kokkos::fence();
@@ -587,12 +595,20 @@ bool IsMeshMultilevel(std::shared_ptr<MeshData<Real>> &md) {
   return md->GetMeshPointer()->multilevel;
 }
 
+bool HasFluxCorrectionOps(std::shared_ptr<MeshData<Real>> &md) {
+  return md->GetMeshPointer()->resolved_packages->NumFluxCorrectionFuncs() > 0;
+}
+
 TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                               std::shared_ptr<MeshData<Real>> &md, bool multilevel) {
-  if (!multilevel) return dependency;
-  tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::flxcor_send>), md);
+  const bool combine = HasFluxCorrectionOps(md);
+  if (!multilevel && !combine) return dependency;
+  auto send = tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::flxcor_send>), md);
   auto receive =
       tl.AddTask(dependency, TF(ReceiveBoundBufs<BoundaryType::flxcor_recv>), md);
+  // Combine ops overwrite fluxes that the send must have packed first
+  if (combine)
+    return tl.AddTask(send | receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
   return tl.AddTask(receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
 }
 } // namespace parthenon
