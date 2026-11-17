@@ -12,21 +12,30 @@
 //========================================================================================
 // This file was made in part with generative AI.
 
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <bvals/comms/bnd_info.hpp>
 #include <parthenon/driver.hpp>
 
 #include "provider_lanes.hpp"
 
 using namespace parthenon::driver::prelude;
+using parthenon::BoundaryType;
 using provider_lanes::kGroups;
 using provider_lanes::kRing;
 using provider_lanes::LaneGraph;
 
 namespace {
+// How often the boundary caches of the exchanges were initialized, summed over the
+// MeshData partitions and ranks
+struct CacheInits {
+  std::int64_t groups = 0, ring = 0, ghosts = 0, partitions = 0;
+};
+
 // Runs ncycles lane exchanges, checking all of them, and reshuffles the groups lane
 // before cycle rebuild_cycle.
 class ProviderLanesDriver : public Driver {
@@ -55,6 +64,7 @@ class ProviderLanesDriver : public Driver {
     // rebuild = false changes the graph without rebuilding the lane: the check fails
     const bool rebuild = pinput->GetOrAddBoolean("provider_lanes", "rebuild", true);
     for (int cycle = 0; cycle < ncycles; ++cycle) {
+      const CacheInits before = CountCacheInits();
       if (cycle == rebuild_cycle) {
         // Every rank changes the graph the same way and rebuilds the lane between
         // exchanges (no lane message in flight)
@@ -63,15 +73,27 @@ class ProviderLanesDriver : public Driver {
       }
       RunCycle(cycle);
       const auto res = provider_lanes::Check(pmesh, *graph_, cycle);
+      const CacheInits after = CountCacheInits();
+      // After cycle 0 only RebuildLane(kGroups) re-initializes caches, and only the
+      // groups lane's (send and receive of the record and flux exchanges)
+      const std::int64_t expected_groups =
+          cycle == rebuild_cycle && rebuild ? 4 * after.partitions : 0;
+      const int cache_errors =
+          cycle > 0 && (after.groups - before.groups != expected_groups ||
+                        after.ring != before.ring || after.ghosts != before.ghosts);
       if (parthenon::Globals::my_rank == 0) {
         std::cout << "provider_lanes: cycle " << cycle << ", graph version "
                   << graph_->version << ", groups of size";
         for (int s = 2; s <= provider_lanes::kMaxGroup; ++s)
           std::cout << " " << s << ":" << res.group_sizes[s];
         std::cout << ", " << res.nchecked << " values checked, " << res.nwrong
-                  << " wrong, hash " << std::hex << res.hash << std::dec << std::endl;
+                  << " wrong, hash " << std::hex << res.hash << std::dec
+                  << "; cache inits groups +" << after.groups - before.groups << " ring +"
+                  << after.ring - before.ring << " ghosts +"
+                  << after.ghosts - before.ghosts << (cache_errors ? " WRONG" : "")
+                  << std::endl;
       }
-      nwrong += res.nwrong;
+      nwrong += res.nwrong + cache_errors;
     }
     return nwrong == 0 ? DriverStatus::complete : DriverStatus::failed;
   }
@@ -83,23 +105,42 @@ class ProviderLanesDriver : public Driver {
     TaskCollection tc;
     const int num_partitions = pmesh->DefaultNumPartitions();
     TaskRegion &region = tc.AddRegion(num_partitions);
-    const std::vector<std::string> groups_vars{"group_rec"};
-    const std::vector<std::string> ring_vars{"ring_rec"};
-    const std::vector<std::string> flux_vars{
-        "q", parthenon::internal_fluxname + parthenon::internal_varname_seperator + "q"};
     for (int i = 0; i < num_partitions; ++i) {
       auto &tl = region[i];
+      // One MeshData holds both lanes' variables and u; each lane exchange touches only
+      // its lane's variables, the ghost exchange only u
       auto &md = pmesh->mesh_data.GetOrAdd("base", i);
-      // One MeshData per lane exchange, holding only that lane's variables
-      auto &md_groups = pmesh->mesh_data.Add("lane_groups", md, groups_vars);
-      auto &md_ring = pmesh->mesh_data.Add("lane_ring", md, ring_vars);
-      auto &md_flux = pmesh->mesh_data.Add("lane_flux", md, flux_vars);
       auto set = tl.AddTask(TaskID(0), provider_lanes::SetValues, md.get(), cycle);
-      parthenon::AddLaneExchangeTasks(set, tl, md_groups, kGroups);
-      parthenon::AddLaneExchangeTasks(set, tl, md_ring, kRing);
-      parthenon::AddLaneFluxCorrectionTasks(set, tl, md_flux, kGroups);
+      parthenon::AddLaneExchangeTasks(set, tl, md, kGroups);
+      parthenon::AddLaneExchangeTasks(set, tl, md, kRing);
+      parthenon::AddLaneFluxCorrectionTasks(set, tl, md, kGroups);
+      parthenon::AddBoundaryExchangeTasks(set, tl, md, pmesh->multilevel);
     }
     tc.Execute();
+  }
+
+  CacheInits CountCacheInits() {
+    constexpr int groups = static_cast<int>(kGroups), ring = static_cast<int>(kRing);
+    CacheInits n;
+    n.partitions = pmesh->DefaultNumPartitions();
+    for (int i = 0; i < n.partitions; ++i) {
+      auto &cache = pmesh->mesh_data.GetOrAdd("base", i)->GetBvarsCache();
+      for (bool send : {true, false}) {
+        n.groups +=
+            cache.GetLaneSubCache(BoundaryType::lane, send, groups).initializations;
+        n.groups += cache
+                        .GetLaneSubCache(send ? BoundaryType::lane_flxcor_send
+                                              : BoundaryType::lane_flxcor_recv,
+                                         send, groups)
+                        .initializations;
+        n.ring += cache.GetLaneSubCache(BoundaryType::lane, send, ring).initializations;
+        n.ghosts += cache.GetSubCache(BoundaryType::any, send).initializations;
+      }
+    }
+#ifdef MPI_PARALLEL
+    MPI_Allreduce(MPI_IN_PLACE, &n, 4, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    return n;
   }
 
   std::shared_ptr<LaneGraph> graph_;

@@ -36,6 +36,8 @@ using parthenon::LaneId;
 //    (version 1) and the lane rebuilt with Mesh::RebuildLane.
 //  - ring: the blocks are shuffled into a ring; channel 0 is the previous block,
 //    channel 1 the next. Never rebuilt.
+// One MeshData holds the variables of both lanes and an ordinary FillGhost variable u;
+// it is exchanged lane by lane, and u by the geometric ghost exchange.
 constexpr LaneId kGroups{0};
 constexpr LaneId kRing{1};
 constexpr int kLayers = 3;
@@ -113,8 +115,8 @@ struct GroupMean {
 };
 
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
-// Sets the records' own slots, clears the received slots to -1 and sets the flux
-// candidates
+// Sets the records' own slots, clears the received slots to -1, sets the flux
+// candidates and u
 TaskStatus SetValues(MeshData<Real> *md, int cycle);
 
 struct CheckResult {
@@ -123,7 +125,8 @@ struct CheckResult {
   int group_sizes[kMaxGroup + 1] = {0};
   std::uint64_t hash = 0;
 };
-// Checks the records and fluxes of every local block against the graph (global sums)
+// Checks the records, fluxes and u ghosts of every local block against the graph and
+// the geometric neighbors (global sums)
 CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle);
 
 } // namespace provider_lanes

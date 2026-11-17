@@ -214,6 +214,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   mq.SetLane(kGroups);
   mq.RegisterFluxCorrectionOps<GroupMean, FluxCandidatePack>();
   pkg->AddField("q", mq);
+
+  // An ordinary ghost-exchanged variable, in the same MeshData as the lane variables
+  Metadata mu(
+      {Metadata::Cell, Metadata::Derived, Metadata::OneCopy, Metadata::FillGhost});
+  pkg->AddField("u", mu);
   return pkg;
 }
 
@@ -225,9 +230,11 @@ TaskStatus SetValues(MeshData<Real> *md, int cycle) {
     auto grec = rc->Get("group_rec").data.Get();
     auto rrec = rc->Get("ring_rec").data.Get();
     auto flux = rc->Get(FluxLabel("q")).data.Get();
+    auto u = rc->Get("u").data.Get();
     Kokkos::deep_copy(grec, -1.0);
     Kokkos::deep_copy(rrec, -1.0);
     Kokkos::deep_copy(flux, 0.0);
+    Kokkos::deep_copy(u, gid + 0.25 * cycle);
     parthenon::par_for(
         PARTHENON_AUTO_LABEL, 0, 0, KOKKOS_LAMBDA(const int) {
           grec(0, 0, 0, 0, 0, 0, 0) = RecordValue(gid, cycle);
@@ -257,7 +264,16 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
     const int ks = rc->GetBoundsK(IndexDomain::interior).s;
     const int js = rc->GetBoundsJ(IndexDomain::interior).s;
     const int is = rc->GetBoundsI(IndexDomain::interior).s;
+    const int ie = rc->GetBoundsI(IndexDomain::interior).e;
     const std::uint64_t tag = 16 * static_cast<std::uint64_t>(gid);
+
+    // u: the x1 face ghosts hold the geometric neighbor's value
+    auto u = rc->Get("u").data.GetHostMirrorAndCopy();
+    for (const auto &nb : pmb->GetNeighbors()) {
+      if (!nb.offsets.IsFace() || nb.offsets(parthenon::X1DIR) == 0) continue;
+      const int i = nb.offsets(parthenon::X1DIR) < 0 ? is - 1 : ie + 1;
+      check(u(0, 0, 0, 0, ks, js, i), nb.gid + 0.25 * cycle, tag + 10 + (i > is));
+    }
 
     check(grec(0, 0, 0, 0, 0, 0, 0), RecordValue(gid, cycle), tag);
     for (int layer = 0; layer < kLayers; ++layer) {
