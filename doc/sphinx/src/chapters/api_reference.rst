@@ -13,6 +13,7 @@ mesh/domain classes.
    ../interface/state
    ../interface/boundary
    ../interface/refinement_operations
+   ../interface/boundary_operations
    ../interface/sparse
    ../mesh/mesh
    ../mesh/domain
