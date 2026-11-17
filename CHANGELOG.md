@@ -5,6 +5,7 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Add `Mesh::PermuteBlocks` run at a user cadence (`ApplicationInput::MeshBlockPermutation`, `parthenon/loadbalancing/permute_interval`), load-balance groups (`ApplicationInput::LoadBalanceGroups`) and the `permute_blocks` example
 - [[PR 5]](https://github.com/acreyes/parthenon/pull/5) Add provider lanes (`Mesh::RegisterNeighborProvider`, `Metadata::SetLane`, `AddLaneExchangeTasks`), `Mesh::RebuildLane` and the `provider_lanes` example
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Add registered same-level flux-correction combine ops (`Metadata::RegisterFluxCorrectionOps<Combine>`) and the library op `flux_correction_ops::AverageShared`
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered same-level boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`), the library op `boundary_ops::AverageOverlapping` and the `boundary_ops` example
@@ -14,6 +15,7 @@
 - [[PR 1446]](https://github.com/parthenon-hpc-lab/parthenon/pull/1446) Die on repeatedly receiving SIGINT
 
 ### Fixed (not changing behavior/API/variables/...)
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Fix `Forest::Make2D` node-neighbor coordinate transforms at nodes of valence >= 6
 - [[PR 1445]](https://github.com/parthenon-hpc-lab/parthenon/pull/1445) Fix ownership for self-bordering blocks
