@@ -96,6 +96,38 @@ struct SumByChannel {
 // face (ks, js + c, is). The pack op sends it to the other group members; the combine
 // op replaces it by the mean over the group, summed in ascending gid, so all members
 // hold the same bits.
+// Variable-length payloads on the groups lane: each sender sends RowsLength rows (at most
+// the capacity, a package param that BufferSize reads and the driver raises before
+// RebuildLane); the unpack op sums, per receiving channel, the rows and their number.
+KOKKOS_INLINE_FUNCTION int RowsLength(int send_gid, int send_channel, int cycle,
+                                      int capacity) {
+  return 1 + (5 * send_gid + 3 * send_channel + 2 * cycle) % capacity;
+}
+KOKKOS_INLINE_FUNCTION Real RowValue(int send_gid, int row, int cycle) {
+  return 1.0 / (send_gid + 2.0 + 0.1 * row + 0.37 * cycle);
+}
+
+struct RowsPack {
+  static std::size_t BufferSize(const parthenon::MeshBlock &pmb,
+                                const parthenon::NeighborBlock &,
+                                const parthenon::Variable<Real> &);
+  static void Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                   const parthenon::BndInfoArrHost_t &info_h,
+                   const parthenon::BndOpIdx_t &idx,
+                   const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                   const parthenon::BndPayload_t &payload,
+                   const parthenon::BndPayloadHost_t &payload_h);
+};
+
+struct RowsUnpack {
+  static void Unpack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                     const parthenon::BndInfoArrHost_t &info_h,
+                     const parthenon::BndOpIdx_t &idx,
+                     const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                     const parthenon::BndPayload_t &payload,
+                     const parthenon::BndPayloadHost_t &payload_h);
+};
+
 struct FluxCandidatePack {
   static std::size_t BufferSize(const parthenon::MeshBlock &,
                                 const parthenon::NeighborBlock &,
@@ -118,12 +150,15 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
 // Sets the records' own slots, clears the received slots to -1, sets the flux
 // candidates and u
 TaskStatus SetValues(MeshData<Real> *md, int cycle);
+void SetCycleAndCapacity(Mesh *pmesh, int cycle, int capacity);
+int GetCapacity(Mesh *pmesh);
 
 struct CheckResult {
   int nwrong = 0;
   int nchecked = 0;
   int group_sizes[kMaxGroup + 1] = {0};
   std::uint64_t hash = 0;
+  std::int64_t rows_sent = 0, rows_capacity = 0;
 };
 // Checks the records, fluxes and u ghosts of every local block against the graph and
 // the geometric neighbors (global sums)
