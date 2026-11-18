@@ -27,7 +27,7 @@
 using namespace parthenon::driver::prelude;
 
 namespace {
-// Exchanges ghost zones and flux corrections once and checks them.
+// Exchanges ghost zones and flux corrections ncycles times and checks them.
 class BoundaryOpsDriver : public Driver {
  public:
   BoundaryOpsDriver(ParameterInput *pin, ApplicationInput *app_in, Mesh *pm)
@@ -37,19 +37,28 @@ class BoundaryOpsDriver : public Driver {
 
   DriverStatus Execute() override {
     boundary_ops::AllocateSparse(pmesh);
-    TaskCollection tc;
-    const int num_partitions = pmesh->DefaultNumPartitions();
-    TaskRegion &region = tc.AddRegion(num_partitions);
-    for (int i = 0; i < num_partitions; ++i) {
-      auto &tl = region[i];
-      auto &md = pmesh->mesh_data.GetOrAdd("base", i);
-      auto set = tl.AddTask(TaskID(0), boundary_ops::SetBlockValues, md.get());
-      parthenon::AddBoundaryExchangeTasks(set, tl, md, true);
-      auto set_flux = tl.AddTask(TaskID(0), boundary_ops::SetFluxes, md.get());
-      parthenon::AddFluxCorrectionTasks(set_flux, tl, md, pmesh->multilevel);
+    const int ncycles = pinput->GetOrAddInteger("boundary_ops", "ncycles", 3);
+    for (int cycle = 0; cycle < ncycles; ++cycle) {
+      boundary_ops::SetCycle(pmesh, cycle);
+      TaskCollection tc;
+      const int num_partitions = pmesh->DefaultNumPartitions();
+      TaskRegion &region = tc.AddRegion(num_partitions);
+      for (int i = 0; i < num_partitions; ++i) {
+        auto &tl = region[i];
+        auto &md = pmesh->mesh_data.GetOrAdd("base", i);
+        auto set = tl.AddTask(TaskID(0), boundary_ops::SetBlockValues, md.get());
+        parthenon::AddBoundaryExchangeTasks(set, tl, md, true);
+        auto set_flux = tl.AddTask(TaskID(0), boundary_ops::SetFluxes, md.get());
+        parthenon::AddFluxCorrectionTasks(set_flux, tl, md, pmesh->multilevel);
+      }
+      tc.Execute();
     }
-    tc.Execute();
 
+    const auto varlen = boundary_ops::GetVarlenStats();
+    if (parthenon::Globals::my_rank == 0)
+      std::cout << "boundary_ops: varlen " << ncycles << " cycles, " << varlen.messages
+                << " messages, " << varlen.sent << " of " << varlen.capacity
+                << " buffer elements sent, " << varlen.wrong << " wrong" << std::endl;
     int naveraged = 0;
     nwrong = boundary_ops::CheckGhosts(pmesh, &naveraged);
     int nshared[boundary_ops::kMaxShared];
@@ -67,6 +76,7 @@ class BoundaryOpsDriver : public Driver {
     }
     nwrong += nwrong_flux;
     pouts->MakeOutputs(pmesh, pinput);
+    nwrong += varlen.wrong;
     return nwrong == 0 ? DriverStatus::complete : DriverStatus::failed;
   }
 

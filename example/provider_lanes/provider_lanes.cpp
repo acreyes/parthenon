@@ -151,6 +151,80 @@ void SumByChannel::Unpack(MeshData<Real> *md, const parthenon::BndInfoArr_t &inf
       });
 }
 
+namespace {
+int GetParam(const StateDescriptor *pkg, const std::string &name) {
+  return pkg->Param<int>(name);
+}
+const StateDescriptor *Package(MeshData<Real> *md) {
+  return md->GetMeshPointer()->packages.Get("provider_lanes").get();
+}
+} // namespace
+
+std::size_t RowsPack::BufferSize(const parthenon::MeshBlock &pmb,
+                                 const parthenon::NeighborBlock &,
+                                 const parthenon::Variable<Real> &) {
+  return GetParam(pmb.packages.Get("provider_lanes").get(), "capacity");
+}
+
+void RowsPack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                    const parthenon::BndInfoArrHost_t &info_h,
+                    const parthenon::BndOpIdx_t &idx,
+                    const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                    const parthenon::BndPayload_t &payload,
+                    const parthenon::BndPayloadHost_t &payload_h) {
+  const int cycle = GetParam(Package(md), "cycle");
+  int maxlen = 0;
+  for (std::size_t n = 0; n < nbuffers; ++n) {
+    const BndInfo &bi = info_h(idx_h(n));
+    // payload_h holds the capacity (BufferSize) on entry
+    payload_h(idx_h(n)) = RowsLength(bi.send_gid, bi.channel, cycle, payload_h(idx_h(n)));
+    maxlen = std::max(maxlen, payload_h(idx_h(n)));
+  }
+  parthenon::par_for(
+      PARTHENON_AUTO_LABEL, 0, nbuffers - 1, 0, maxlen - 1,
+      KOKKOS_LAMBDA(const int n, const int row) {
+        const BndInfo &bi = info(idx(n));
+        const int len =
+            RowsLength(bi.send_gid, bi.channel, cycle, static_cast<int>(bi.buf.size()));
+        if (row < len) bi.buf(row) = RowValue(bi.send_gid, row, cycle);
+      });
+}
+
+void RowsUnpack::Unpack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                        const parthenon::BndInfoArrHost_t &info_h,
+                        const parthenon::BndOpIdx_t &idx,
+                        const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                        const parthenon::BndPayload_t &payload,
+                        const parthenon::BndPayloadHost_t &payload_h) {
+  int nruns;
+  auto runs = ChannelRuns(info_h, idx_h, nbuffers, &nruns);
+  Kokkos::parallel_for(
+      "RowsUnpack", Kokkos::RangePolicy<>(parthenon::DevExecSpace(), 0, nruns),
+      KOKKOS_LAMBDA(const int r) {
+        Real sum = 0.0;
+        int nrows = 0;
+        for (int n = runs(r); n < runs(r + 1); ++n) {
+          const int len = payload(idx(n));
+          for (int row = 0; row < len; ++row)
+            sum += info(idx(n)).buf(row);
+          nrows += len;
+        }
+        const BndInfo &bi = info(idx(runs(r)));
+        bi.var(0, 0, 0, 0, 0, 0, bi.channel) = sum;
+        bi.var(0, 0, 0, 0, 0, 0, kLayers + bi.channel) = nrows;
+      });
+}
+
+void SetCycleAndCapacity(Mesh *pmesh, int cycle, int capacity) {
+  auto pkg = pmesh->packages.Get("provider_lanes");
+  pkg->UpdateParam("cycle", cycle);
+  pkg->UpdateParam("capacity", capacity);
+}
+
+int GetCapacity(Mesh *pmesh) {
+  return pmesh->packages.Get("provider_lanes")->Param<int>("capacity");
+}
+
 void FluxCandidatePack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
                              const parthenon::BndInfoArrHost_t &info_h,
                              const parthenon::BndOpIdx_t &idx,
@@ -209,6 +283,17 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   mr.RegisterBoundaryOps<SumByChannel, RecordPack>();
   pkg->AddField("ring_rec", mr);
 
+  // Variable-length rows on the groups lane: slot c the sum of the rows received on
+  // channel c, slot kLayers + c their number
+  Metadata mrows({Metadata::None, Metadata::Derived, Metadata::OneCopy},
+                 std::vector<int>{2 * kLayers});
+  mrows.SetLane(kGroups);
+  mrows.RegisterBoundaryOps<RowsUnpack, RowsPack>();
+  pkg->AddField("group_rows", mrows);
+  pkg->AddParam("cycle", 0, Params::Mutability::Mutable);
+  pkg->AddParam("capacity", pin->GetOrAddInteger("provider_lanes", "rows_capacity", 4),
+                Params::Mutability::Mutable);
+
   // A cell variable whose face flux is combined over the groups
   Metadata mq({Metadata::Cell, Metadata::WithFluxes});
   mq.SetLane(kGroups);
@@ -229,6 +314,7 @@ TaskStatus SetValues(MeshData<Real> *md, int cycle) {
     const int gid = rc->GetBlockPointer()->gid;
     auto grec = rc->Get("group_rec").data.Get();
     auto rrec = rc->Get("ring_rec").data.Get();
+    Kokkos::deep_copy(rc->Get("group_rows").data.Get(), -1.0);
     auto flux = rc->Get(FluxLabel("q")).data.Get();
     auto u = rc->Get("u").data.Get();
     Kokkos::deep_copy(grec, -1.0);
@@ -248,6 +334,7 @@ TaskStatus SetValues(MeshData<Real> *md, int cycle) {
 
 CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
   CheckResult res;
+  const int capacity = GetCapacity(pmesh);
   auto check = [&res](Real got, Real expected, std::uint64_t tag) {
     std::uint64_t bits;
     std::memcpy(&bits, &got, sizeof(bits));
@@ -260,6 +347,7 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
     const int gid = pmb->gid;
     auto grec = rc->Get("group_rec").data.GetHostMirrorAndCopy();
     auto rrec = rc->Get("ring_rec").data.GetHostMirrorAndCopy();
+    auto rows = rc->Get("group_rows").data.GetHostMirrorAndCopy();
     auto flux = rc->Get(FluxLabel("q")).data.GetHostMirrorAndCopy();
     const int ks = rc->GetBoundsK(IndexDomain::interior).s;
     const int js = rc->GetBoundsJ(IndexDomain::interior).s;
@@ -289,6 +377,20 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
       }
       mean /= g.size();
       check(grec(0, 0, 0, 0, 0, 0, 1 + ch), sum, tag + 1 + ch);
+      // Rows received on ch, summed per sender in ascending gid
+      Real row_sum = 0.0;
+      int nrows = 0;
+      for (int m : g) {
+        if (m == gid) continue;
+        const int len = RowsLength(m, LaneGraph::Channel(layer, m), cycle, capacity);
+        for (int row = 0; row < len; ++row)
+          row_sum += RowValue(m, row, cycle);
+        nrows += len;
+      }
+      res.rows_sent += nrows;
+      res.rows_capacity += capacity * (g.size() - 1);
+      check(rows(0, 0, 0, 0, 0, 0, ch), row_sum, tag + 11 + ch);
+      check(rows(0, 0, 0, 0, 0, 0, kLayers + ch), nrows, tag + 14 + ch);
       check(flux(0, 0, 0, 0, ks, js + ch, is), mean, tag + 4 + ch);
     }
 
@@ -310,6 +412,7 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
   for (int s = 0; s <= kMaxGroup; ++s)
     res.group_sizes[s] = counts[2 + s];
   MPI_Allreduce(MPI_IN_PLACE, &res.hash, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Allreduce(MPI_IN_PLACE, &res.rows_sent, 2, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 #endif
   return res;
 }

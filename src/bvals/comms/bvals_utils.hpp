@@ -277,6 +277,10 @@ inline void BuildBndOpsCache(BndOpsCache_t *pops, std::vector<KEY> &op_keys,
   for (std::size_t i = 0; i < ops.ndefault; ++i)
     default_h(i) = default_bufs[i];
   Kokkos::deep_copy(ops.default_subset, default_h);
+  ops.payload = BndPayload_t("bnd_ops_payload", nbound);
+  ops.payload_h = Kokkos::create_mirror_view(ops.payload);
+  Kokkos::deep_copy(ops.payload_h, -1);
+  Kokkos::deep_copy(ops.payload, -1);
 }
 
 using F_BND_INFO = std::function<BndInfo(MeshBlock *pmb, const NeighborBlock &nb,
@@ -326,6 +330,7 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   using op_key_t = std::tuple<std::size_t, int, std::string, int, int, int, std::size_t>;
   std::vector<op_key_t> op_keys;
   std::vector<std::size_t> default_bufs;
+  bool variable_length = false;
 
   int ibound = 0;
   ForEachBoundary<BOUND_TYPE>(
@@ -357,8 +362,10 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
             // contract); coarse-fine boundaries keep the default copy and the variable's
             // prolongation/restriction ops
             if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
-                (on_lane || nb.loc.level() == pmb->loc.level()))
+                (on_lane || nb.loc.level() == pmb->loc.level())) {
               id = pkg->BoundaryFuncID(funcs);
+              variable_length = variable_length || (SENDER && funcs.variable_length);
+            }
           }
           if (id >= 0) {
             op_keys.emplace_back(id, bi.block, v->label(),
@@ -380,6 +387,9 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   Kokkos::deep_copy(cache.bnd_info, cache.bnd_info_h);
   cache.prores_cache.CopyToDevice();
   BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, nfuncs, nbound);
+  cache.bnd_ops.variable_length = variable_length;
+  PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,
+                           "Variable-length boundary ops need coalesced comms off");
 }
 
 } // namespace parthenon
