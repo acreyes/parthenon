@@ -5,7 +5,7 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
-- [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered same-level boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`), the library op `boundary_ops::AverageOverlapping` and the `boundary_ops` example
+- [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Add registered same-level boundary ops (`Metadata::RegisterBoundaryOps<Unpack, Pack>`), variable-length payloads for registered pack/unpack ops, the library op `boundary_ops::AverageOverlapping` and the `boundary_ops` example
 
 
 ### Changed (changing behavior/API/variables/...)

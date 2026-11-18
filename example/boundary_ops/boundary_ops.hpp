@@ -14,6 +14,7 @@
 #ifndef EXAMPLE_BOUNDARY_OPS_BOUNDARY_OPS_HPP_
 #define EXAMPLE_BOUNDARY_OPS_BOUNDARY_OPS_HPP_
 
+#include <cstdint>
 #include <memory>
 
 #include <parthenon/package.hpp>
@@ -34,6 +35,22 @@ void AllocateSparse(Mesh *pmesh);
 // reports the global number of regions that averaged two or more neighbors in
 // naveraged.
 int CheckGhosts(Mesh *pmesh, int *naveraged);
+
+// Variable-length payloads: the pack op of "varlen" fills and sends a cycle- and
+// neighbor-dependent number of leading buffer elements, the unpack op checks the
+// received length and values.
+KOKKOS_INLINE_FUNCTION int VarlenLength(int send_gid, int recv_gid, int cycle,
+                                        int capacity) {
+  return 1 + (7 * send_gid + 3 * recv_gid + 5 * cycle) % capacity;
+}
+KOKKOS_INLINE_FUNCTION Real VarlenValue(int send_gid, int recv_gid, int m, int cycle) {
+  return send_gid + 1.0e3 * recv_gid + 1.0e6 * m + 0.5 * cycle;
+}
+struct VarlenStats {
+  std::int64_t messages = 0, sent = 0, capacity = 0, wrong = 0;
+};
+void SetCycle(Mesh *pmesh, int cycle);
+VarlenStats GetVarlenStats();
 
 } // namespace boundary_ops
 

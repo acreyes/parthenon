@@ -25,6 +25,91 @@
 #include "boundary_ops.hpp"
 
 namespace boundary_ops {
+namespace {
+VarlenStats varlen_stats;
+
+int GetCycle(MeshData<Real> *md) {
+  return md->GetMeshPointer()->packages.Get("boundary_ops")->Param<int>("cycle");
+}
+} // namespace
+
+// Fills the first VarlenLength elements of each buffer and reports that length
+struct VarlenPack {
+  static void Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                   const parthenon::BndInfoArrHost_t &info_h,
+                   const parthenon::BndOpIdx_t &idx,
+                   const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                   const parthenon::BndPayload_t &payload,
+                   const parthenon::BndPayloadHost_t &payload_h) {
+    const int cycle = GetCycle(md);
+    int maxlen = 0;
+    for (std::size_t b = 0; b < nbuffers; ++b) {
+      const auto &bi = info_h(idx_h(b));
+      // payload_h is preset to the buffer capacity
+      payload_h(idx_h(b)) =
+          VarlenLength(bi.send_gid, bi.recv_gid, cycle, payload_h(idx_h(b)));
+      maxlen = std::max(maxlen, payload_h(idx_h(b)));
+    }
+    parthenon::par_for(
+        PARTHENON_AUTO_LABEL, 0, nbuffers - 1, 0, maxlen - 1,
+        KOKKOS_LAMBDA(const int b, const int m) {
+          const auto &bi = info(idx(b));
+          const int len = VarlenLength(bi.send_gid, bi.recv_gid, cycle,
+                                       static_cast<int>(bi.buf.size()));
+          if (m < len) bi.buf(m) = VarlenValue(bi.send_gid, bi.recv_gid, m, cycle);
+        });
+  }
+};
+
+// Checks the received length and the received elements
+struct VarlenUnpack {
+  static void Unpack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
+                     const parthenon::BndInfoArrHost_t &info_h,
+                     const parthenon::BndOpIdx_t &idx,
+                     const parthenon::BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                     const parthenon::BndPayload_t &payload,
+                     const parthenon::BndPayloadHost_t &payload_h) {
+    const int cycle = GetCycle(md);
+    int maxlen = 0;
+    for (std::size_t b = 0; b < nbuffers; ++b) {
+      const auto &bi = info_h(idx_h(b));
+      const int capacity = bi.buf.size();
+      const int len = payload_h(idx_h(b));
+      varlen_stats.messages++;
+      varlen_stats.sent += len;
+      varlen_stats.capacity += capacity;
+      if (len != VarlenLength(bi.send_gid, bi.recv_gid, cycle, capacity))
+        varlen_stats.wrong++;
+      maxlen = std::max(maxlen, len);
+    }
+    int nwrong = 0;
+    parthenon::par_reduce(
+        parthenon::loop_pattern_mdrange_tag, PARTHENON_AUTO_LABEL, DevExecSpace(), 0,
+        nbuffers - 1, 0, maxlen - 1,
+        KOKKOS_LAMBDA(const int b, const int m, int &lwrong) {
+          const auto &bi = info(idx(b));
+          if (m < payload(idx(b)) &&
+              bi.buf(m) != VarlenValue(bi.send_gid, bi.recv_gid, m, cycle))
+            lwrong++;
+        },
+        Kokkos::Sum<int>(nwrong));
+    varlen_stats.wrong += nwrong;
+  }
+};
+
+void SetCycle(Mesh *pmesh, int cycle) {
+  pmesh->packages.Get("boundary_ops")->UpdateParam("cycle", cycle);
+}
+
+VarlenStats GetVarlenStats() {
+  VarlenStats s = varlen_stats;
+#ifdef MPI_PARALLEL
+  PARTHENON_MPI_CHECK(
+      MPI_Allreduce(MPI_IN_PLACE, &s.messages, 4, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD));
+#endif
+  return s;
+}
+
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto pkg = std::make_shared<StateDescriptor>("boundary_ops");
   // Each ghost region gets the mean of the buffers of all the neighbors that map onto
@@ -39,6 +124,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
       {Metadata::Cell, Metadata::Independent, Metadata::FillGhost, Metadata::Sparse});
   ms.RegisterBoundaryOps<parthenon::boundary_ops::AverageOverlapping>();
   pkg->AddSparsePool("ghost_avg_sparse", ms, std::vector<int>{0});
+  // Variable-length payloads (see VarlenPack)
+  Metadata mv({Metadata::Cell, Metadata::Independent, Metadata::FillGhost});
+  mv.RegisterBoundaryOps<VarlenUnpack, VarlenPack>();
+  pkg->AddField("varlen", mv);
+  pkg->AddParam("cycle", 0, Params::Mutability::Mutable);
   return pkg;
 }
 

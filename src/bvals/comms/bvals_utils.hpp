@@ -246,6 +246,10 @@ inline void BuildBndOpsCache(BndOpsCache_t *pops, std::vector<KEY> &op_keys,
   for (std::size_t i = 0; i < ops.ndefault; ++i)
     default_h(i) = default_bufs[i];
   Kokkos::deep_copy(ops.default_subset, default_h);
+  ops.payload = BndPayload_t("bnd_ops_payload", nbound);
+  ops.payload_h = Kokkos::create_mirror_view(ops.payload);
+  Kokkos::deep_copy(ops.payload_h, -1);
+  Kokkos::deep_copy(ops.payload, -1);
 }
 
 using F_BND_INFO = std::function<BndInfo(MeshBlock *pmb, const NeighborBlock &nb,
@@ -284,6 +288,7 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   using op_key_t = std::tuple<std::size_t, int, std::string, int, int, int, std::size_t>;
   std::vector<op_key_t> op_keys;
   std::vector<std::size_t> default_bufs;
+  bool variable_length = false;
 
   int ibound = 0;
   ForEachBoundary<BOUND_TYPE>(
@@ -305,6 +310,7 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
               nb.loc.level() == pmb->loc.level()) {
             op_keys.emplace_back(pkg->BoundaryFuncID(funcs), bi.block, v->label(),
                                  nb.offsets.GetIdx(), nb.gid, ibound, ibuf);
+            variable_length = variable_length || funcs.variable_length;
           } else {
             default_bufs.push_back(ibuf);
           }
@@ -322,6 +328,9 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   cache.prores_cache.CopyToDevice();
   BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, pkg->NumBoundaryFuncs(),
                    nbound);
+  cache.bnd_ops.variable_length = variable_length;
+  PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,
+                           "Variable-length boundary ops need coalesced comms off");
 }
 
 } // namespace parthenon
