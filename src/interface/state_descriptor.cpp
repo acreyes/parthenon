@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #include <iomanip>
 #include <iostream>
@@ -32,6 +33,13 @@
 #include "utils/error_checking.hpp"
 
 namespace parthenon {
+
+void BoundaryFunctionMaps::Register(const Metadata &m) {
+  if (m.HasBoundaryOps() && funcs_to_ids.count(m.GetBoundaryFunctions()) == 0) {
+    const std::size_t id = funcs_to_ids.size();
+    funcs_to_ids[m.GetBoundaryFunctions()] = id;
+  }
+}
 
 void RefinementFunctionMaps::Register(const Metadata &m, std::string varname) {
   if (m.HasRefinementOps()) {
@@ -326,6 +334,7 @@ bool StateDescriptor::AddFieldImpl_(const VarID &vid, const Metadata &m_in,
     labelToVidMap_.insert({vid.label(), vid});
     metadataMap_.insert({vid, m});
     refinementFuncMaps_.Register(m, vid.label());
+    boundaryFuncMaps_.Register(m);
     allocControllerReverseMap_.insert({vid, control_vid});
     // Add this variable to the set of unique IDs at the
     // earliest possible time
@@ -347,6 +356,7 @@ bool StateDescriptor::AddSparsePoolImpl_(const SparsePool &pool) {
 
   sparsePoolMap_.insert({pool.base_name(), pool});
   refinementFuncMaps_.Register(pool.shared_metadata(), pool.base_name());
+  boundaryFuncMaps_.Register(pool.shared_metadata());
 
   std::string controller_base = pool.controller_base_name();
   if (controller_base == "") controller_base = pool.base_name();

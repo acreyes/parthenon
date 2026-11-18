@@ -1,0 +1,50 @@
+# ========================================================================================
+#  (C) (or copyright) 2026. Triad National Security, LLC. All rights reserved.
+#
+#  This program was produced under U.S. Government contract 89233218CNA000001 for Los
+#  Alamos National Laboratory (LANL), which is operated by Triad National Security, LLC
+#  for the U.S. Department of Energy/National Nuclear Security Administration. All rights
+#  in the program are reserved by Triad National Security, LLC, and the U.S. Department
+#  of Energy/National Nuclear Security Administration. The Government is granted for
+#  itself and others acting on its behalf a nonexclusive, paid-up, irrevocable worldwide
+#  license in this material to reproduce, prepare derivative works, distribute copies to
+#  the public, perform publicly and display publicly, and to permit others to do so.
+# ========================================================================================
+# This file was made in part with generative AI.
+
+<parthenon/job>
+problem_id = boundary_ops
+
+<parthenon/mesh>
+# The mesh is a forest of fans built in main, see <boundary_ops> below. The domain
+# entries here are required but do not set the forest's geometry.
+refinement = static
+nx1 = 16
+x1min = 0.0
+x1max = 1.0
+ix1_bc = outflow
+ox1_bc = outflow
+nx2 = 16
+x2min = 0.0
+x2max = 1.0
+ix2_bc = outflow
+ox2_bc = outflow
+nx3 = 1
+x3min = -0.5
+x3max = 0.5
+pack_size = 4
+
+<parthenon/meshblock>
+nx1 = 8
+nx2 = 8
+nx3 = 1
+
+# Valences of the central nodes of the fans
+<boundary_ops>
+min_valence = 3
+max_valence = 6
+
+<parthenon/output0>
+file_type = hdf5
+ghost_zones = true
+variables = ghost_avg

@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #include <algorithm>
 #include <array>
@@ -143,6 +144,15 @@ void Face::SetEdgeCoordinateTransforms() {
 }
 
 void Face::SetNodeCoordinateTransforms() {
+  // A node neighbor shares only the node P with this face. Walk the faces around P
+  // through shared edges, this = F_0, F_1, ..., F_k = neighbor. In each face, call s+ the
+  // direction along its edge with the next face of the walk and s- the other direction.
+  // The transform maps s+ to s+ and s- to s-, both reversed through P. For k == 2 this
+  // equals composing the two edge transforms; composing k > 2 edge transforms around an
+  // irregular node does not map this face's corner at P onto the neighbor's corner at P.
+  auto along_edge_dir = [](const CellCentOffsets &edge_offset) {
+    return static_cast<int>(edge_offset[0]) == 0 ? 0 : 1;
+  };
   Indexer2D offset_idxer({-1, 1}, {-1, 1});
   for (int n = 0; n < offset_idxer.size(); ++n) {
     auto [ox1, ox2] = offset_idxer(n);
@@ -153,29 +163,47 @@ void Face::SetNodeCoordinateTransforms() {
         auto node_overlap = NodeListOverlap(nodes, neighbor->nodes);
         PARTHENON_REQUIRE(node_overlap.size() == 1,
                           "Must only have a single node overlap for node neighbors.");
-        for (auto &w_possible_shared_neighbor : node_overlap[0]->associated_faces) {
-          PARTHENON_REQUIRE(!w_possible_shared_neighbor.expired(),
-                            "Invalid weak pointer to face.");
-          auto possible_shared_neighbor = w_possible_shared_neighbor.lock();
-          if (neighbors_to_offsets.count(possible_shared_neighbor) &&
-              neighbor->neighbors_to_offsets.count(possible_shared_neighbor)) {
-            if (neighbors_to_offsets[possible_shared_neighbor].IsEdge() &&
-                neighbor->neighbors_to_offsets[possible_shared_neighbor].IsEdge()) {
-              // Both block share this neighbor on their edges
-              auto offsets1 = neighbors_to_offsets[possible_shared_neighbor];
-              auto ct1 = neighbors(static_cast<int>(offsets1[0]),
-                                   static_cast<int>(offsets1[1]))[0]
-                             .second;
-              auto offsets2 = possible_shared_neighbor->neighbors_to_offsets[neighbor];
-              auto ct2 = possible_shared_neighbor
-                             ->neighbors(static_cast<int>(offsets2[0]),
-                                         static_cast<int>(offsets2[1]))[0]
-                             .second;
-              coord_trans = ComposeTransformations(ct1, ct2);
-              break;
+        auto node = node_overlap[0];
+
+        // Breadth first search from this face to the neighbor through edges at node
+        std::unordered_map<Face *, Face *> previous{{this, nullptr}};
+        std::vector<Face *> queue{this};
+        for (std::size_t q = 0; q < queue.size() && !previous.count(neighbor.get());
+             ++q) {
+          for (auto &[w_face, off] : queue[q]->neighbors_to_offsets) {
+            auto face = w_face.lock();
+            if (face && off.IsEdge() && face->face_index.count(node) &&
+                !previous.count(face.get())) {
+              previous[face.get()] = queue[q];
+              queue.push_back(face.get());
             }
           }
         }
+        PARTHENON_REQUIRE(previous.count(neighbor.get()),
+                          "Node neighbor is not connected through edges at the node.");
+        Face *last = previous[neighbor.get()];
+        Face *first = neighbor.get();
+        while (previous[first] != this)
+          first = previous[first];
+
+        // s+ in this face and s- in the neighbor, the other direction in each is the
+        // remaining one
+        const int splus = along_edge_dir(neighbors_to_offsets[first->getptr()]);
+        const int sminus_neigh =
+            along_edge_dir(neighbor->neighbors_to_offsets[last->getptr()]);
+        const auto &corner = node_to_offset[face_index[node]];
+        const auto &corner_neigh = neighbor->node_to_offset[neighbor->face_index[node]];
+
+        LogicalCoordinateTransformation ct;
+        for (const auto &[d, dn] : {std::make_pair(splus, 1 - sminus_neigh),
+                                    std::make_pair(1 - splus, sminus_neigh)}) {
+          ct.SetDirection(static_cast<CoordinateDirection>(d + 1),
+                          static_cast<CoordinateDirection>(dn + 1),
+                          corner[d] == corner_neigh[dn]);
+        }
+        ct.offset = {ox1, ox2, 0};
+        ct.use_offset = true;
+        coord_trans = ct;
       }
     }
   }

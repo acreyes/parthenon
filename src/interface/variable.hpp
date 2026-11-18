@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 #ifndef INTERFACE_VARIABLE_HPP_
 #define INTERFACE_VARIABLE_HPP_
 
@@ -110,6 +111,12 @@ class Variable {
   inline bool HasRefinementOps() const { return m_.HasRefinementOps(); }
   inline const refinement::RefinementFunctions_t &GetRefinementFunctions() const {
     return m_.GetRefinementFunctions();
+  }
+
+  /// Registered boundary ops owned in metadata
+  inline bool HasBoundaryOps() const { return m_.HasBoundaryOps(); }
+  inline const BoundaryFunctions_t &GetBoundaryFunctions() const {
+    return m_.GetBoundaryFunctions();
   }
 
   /// Get Sparse ID (InvalidSparseID if not sparse)

@@ -10,10 +10,12 @@
 # license in this material to reproduce, prepare derivative works, distribute copies to
 # the public, perform publicly and display publicly, and to permit others to do so.
 #=========================================================================================
+# This file was made in part with generative AI.
 
 add_subdirectory(stochastic_subgrid)
 add_subdirectory(advection)
 add_subdirectory(boundary_exchange)
+add_subdirectory(boundary_ops)
 add_subdirectory(fine_advection)
 add_subdirectory(calculate_pi)
 add_subdirectory(kokkos_pi)

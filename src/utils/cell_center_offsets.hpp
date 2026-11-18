@@ -10,6 +10,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 #ifndef UTILS_CELL_CENTER_OFFSETS_HPP_
 #define UTILS_CELL_CENTER_OFFSETS_HPP_
 
@@ -56,8 +57,11 @@ struct CellCentOffsets {
   constexpr CellCentOffsets(int ox1, int ox2, int ox3)
       : u{static_cast<Offset>(ox1), static_cast<Offset>(ox2), static_cast<Offset>(ox3)} {}
 
+  KOKKOS_INLINE_FUNCTION
   Offset &operator[](int idx) { return u[idx]; }
+  KOKKOS_INLINE_FUNCTION
   const Offset &operator[](int idx) const { return u[idx]; }
+  KOKKOS_INLINE_FUNCTION
   int operator()(CoordinateDirection dir) const { return static_cast<int>(u[dir - 1]); }
 
   operator std::array<int, 3>() const {
@@ -75,31 +79,37 @@ struct CellCentOffsets {
   // element in that direction from the cell center.
   std::vector<std::pair<CoordinateDirection, Offset>> GetNormals() const;
 
+  KOKKOS_INLINE_FUNCTION
   bool IsNode() const {
     return 3 == abs(static_cast<int>(u[0])) + abs(static_cast<int>(u[1])) +
                     abs(static_cast<int>(u[2]));
   }
 
+  KOKKOS_INLINE_FUNCTION
   bool IsEdge() const {
     return 2 == abs(static_cast<int>(u[0])) + abs(static_cast<int>(u[1])) +
                     abs(static_cast<int>(u[2]));
   }
 
+  KOKKOS_INLINE_FUNCTION
   bool IsFace() const {
     return 1 == abs(static_cast<int>(u[0])) + abs(static_cast<int>(u[1])) +
                     abs(static_cast<int>(u[2]));
   }
 
+  KOKKOS_INLINE_FUNCTION
   bool IsCell() const {
     return 0 == abs(static_cast<int>(u[0])) + abs(static_cast<int>(u[1])) +
                     abs(static_cast<int>(u[2]));
   }
 
+  KOKKOS_INLINE_FUNCTION
   int GetIdx() const {
     return (static_cast<int>(u[0]) + 1) + 3 * (static_cast<int>(u[1]) + 1) +
            9 * (static_cast<int>(u[2]) + 1);
   }
 
+  KOKKOS_INLINE_FUNCTION
   int GetReverseIdx() const {
     return (1 - static_cast<int>(u[0])) + 3 * (1 - static_cast<int>(u[1])) +
            9 * (1 - static_cast<int>(u[2]));
