@@ -181,6 +181,11 @@ struct ProResCache_t {
   }
 };
 
+// Payload lengths (number of buffer elements) of the boundaries of a cache, indexed like
+// its BndInfo array; passed to variable-length boundary ops (see bnd_ops.hpp).
+using BndPayload_t = ParArray1D<int>;
+using BndPayloadHost_t = typename BndPayload_t::host_mirror_type;
+
 // Buckets of the boundaries of one cache that use a registered boundary op (pack in send
 // caches, unpack in receive caches), indexed by StateDescriptor::BoundaryFuncID, and the
 // remaining boundaries that take the default copy. Empty (nuser == 0) unless a variable
@@ -193,6 +198,12 @@ struct BndOpsCache_t {
   std::vector<std::size_t> buffer_subset_sizes;
   ParArray2D<std::size_t> buffer_subsets{};
   ParArray2D<std::size_t>::host_mirror_type buffer_subsets_h{};
+  // Payload lengths, allocated when nuser > 0. Entries of buckets whose pack op is
+  // variable-length are set each send (send caches) or receive (receive caches), the
+  // others stay -1 (send the whole buffer).
+  bool variable_length = false;
+  BndPayload_t payload{};
+  BndPayloadHost_t payload_h{};
 
   void clear() {
     nuser = 0;
@@ -201,6 +212,9 @@ struct BndOpsCache_t {
     buffer_subset_sizes.clear();
     buffer_subsets = ParArray2D<std::size_t>{};
     buffer_subsets_h = ParArray2D<std::size_t>::host_mirror_type{};
+    variable_length = false;
+    payload = BndPayload_t{};
+    payload_h = BndPayloadHost_t{};
   }
 };
 

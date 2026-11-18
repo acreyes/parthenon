@@ -86,7 +86,8 @@ buffers.
   an op that combines buffers in bucket order gives bitwise identical results
   on any number of ranks.
 - A buffer filled by ``Pack`` uses the default buffer size and is always sent
-  (it is never sent as a null buffer of a sparse variable).
+  (it is never sent as a null buffer of a sparse variable). A variable-length
+  ``Pack`` sends only a prefix of it, see below.
 - An op runs on host and launches its own kernels in ``DevExecSpace()``. It
   should write only its own variables (``Unpack``) or buffers (``Pack``).
 - Ops act on the variable's own same-level ghost exchange for every
@@ -95,6 +96,61 @@ buffers.
 - Variables without registered ops are not affected: if no variable in a
   cache has ops, the cache holds no op buckets and the default kernels run
   over all boundaries exactly as before.
+
+Variable-length payloads
+------------------------
+
+A buffer's allocated size is its **capacity**; by default the whole buffer is
+sent. An op whose data volume changes from step to step (e.g. a number of
+neighbor rows that depends on a moving geometry) can send only the leading
+**payload** of each buffer. It declares this by taking two more arguments, the
+payload lengths in buffer elements on device and host, indexed like the
+``BndInfo`` array:
+
+.. code:: c++
+
+   struct MyPack {
+     static void Pack(MeshData<Real> *md, const BndInfoArr_t &info,
+                      const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
+                      const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                      const BndPayload_t &payload, const BndPayloadHost_t &payload_h);
+   };
+   struct MyUnpack {
+     static void Unpack(/* same arguments */);
+   };
+
+- ``Pack``: before the call ``payload_h(idx_h(n))`` holds the capacity
+  (``info_h(idx_h(n)).buf.size()``). The op fills the first ``len`` elements
+  of the buffer and sets ``payload_h(idx_h(n)) = len`` on host (if it computes
+  the lengths on device, it copies them to ``payload_h`` itself; ``payload`` is
+  not read). Only those ``len`` elements are sent. ``len`` must be in
+  ``[1, capacity]``; anything else is an error (``SendBoundBufs`` throws). A
+  zero-length message would mean a null buffer of a sparse variable, so send
+  at least one element.
+- ``Unpack``: ``payload_h(idx_h(n))`` and ``payload(idx(n))`` hold the
+  number of elements received. Elements past it are stale (left from earlier
+  messages, or, for same-rank buffers, whatever the sender wrote there).
+- Each side opts in separately: an ``Unpack`` that takes the lengths gets them
+  even if its ``Pack`` sends whole buffers; a variable-length ``Pack`` must be
+  paired with a registered ``Unpack``. Ops that do not take the lengths are
+  called as before.
+- How the length gets to the receiver: ``CommBuffer::Send(size)`` posts an
+  MPI message of ``size`` elements, while receives are posted with the full
+  capacity, so MPI accepts the shorter message; the receiving ``CommBuffer``
+  stores the count of the completed receive (``MPI_Get_count``, which it
+  already called to detect null buffers). A same-rank buffer is one object on
+  both ends and stores the length given to ``Send``. Both are read with
+  ``CommBuffer::GetPayloadSize()``.
+- The capacity is fixed when the buffers are built. To send more than the
+  capacity, allocate larger buffers and rebuild them (for provider lanes:
+  return a larger ``BufferSize`` and call ``Mesh::RebuildLane``).
+- Variable-length ops cannot be combined with coalesced communication
+  (``parthenon/mesh/do_coalesced_comms``).
+- Cost: buffers without a variable-length op are sent as before (whole
+  buffer). The bookkeeping is one integer store per ``Send`` and per completed
+  MPI receive, plus, for caches with registered ops only, a host loop over
+  the variable-length buckets and one small host-to-device copy before their
+  ``Unpack``.
 
 Library ops
 -----------
@@ -129,6 +185,10 @@ valence 3 to 6. A dense variable and a member of a sparse pool both register
 ``AverageOverlapping``. At valence 5 and 6 two or three node neighbors share a
 corner ghost region of the blocks at the central node; with the default copy
 the region would hold whichever buffer was unpacked last. The example checks
-every ghost region of both variables against the neighbor average. The
+every ghost region of both variables against the neighbor average. A third
+variable, ``varlen``, registers a variable-length pack op that sends
+``1 + (7 send_gid + 3 recv_gid + 5 cycle) mod capacity`` elements per buffer
+over three cycles, and an unpack op that checks the received lengths and
+values. The
 regression test ``boundary_ops`` runs it on 1, 2 and 4 ranks and requires the
 ghost zones of all runs to be bitwise identical.

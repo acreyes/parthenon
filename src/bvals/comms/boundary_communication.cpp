@@ -222,17 +222,43 @@ void UnpackDefaultBuffers(const BndInfoArr_t &bnd_info,
 }
 
 // Call the registered pack (send) or unpack (receive) op of every bucket of the cache.
+// For variable-length ops, preset the payload lengths to the buffer capacity and check
+// them after Pack, or set them from the received messages before Unpack.
 void ApplyBoundaryOps(MeshData<Real> *md, BvarsSubCache_t *pcache, bool send) {
   auto &cache = *pcache;
-  const auto &ops = cache.bnd_ops;
+  auto &ops = cache.bnd_ops;
   StateDescriptor *pkg = md->GetMeshPointer()->resolved_packages.get();
   for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs()) {
     const std::size_t n = ops.buffer_subset_sizes[id];
     if (n == 0) continue;
     BndOpIdx_t subset = Kokkos::subview(ops.buffer_subsets, id, Kokkos::ALL());
     BndOpIdxHost_t subset_h = Kokkos::subview(ops.buffer_subsets_h, id, Kokkos::ALL());
-    const auto &op = send ? funcs.pack : funcs.unpack;
-    op(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n);
+    if (send) {
+      if (funcs.variable_length) {
+        for (std::size_t b = 0; b < n; ++b)
+          ops.payload_h(subset_h(b)) = cache.bnd_info_h(subset_h(b)).buf.size();
+      }
+      funcs.pack(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n, ops.payload,
+                 ops.payload_h);
+      if (funcs.variable_length) {
+        for (std::size_t b = 0; b < n; ++b) {
+          const auto i = subset_h(b);
+          const int capacity = cache.bnd_info_h(i).buf.size();
+          PARTHENON_REQUIRE_THROWS(
+              ops.payload_h(i) >= 1 && ops.payload_h(i) <= capacity,
+              "Boundary pack op payload must be in [1, buffer size]; to send more, "
+              "allocate larger buffers (lane BufferSize + RebuildLane).");
+        }
+      }
+    } else {
+      if (funcs.unpack_reads_payload) {
+        for (std::size_t b = 0; b < n; ++b)
+          ops.payload_h(subset_h(b)) = cache.buf_vec[subset_h(b)]->GetPayloadSize();
+        Kokkos::deep_copy(ops.payload, ops.payload_h);
+      }
+      funcs.unpack(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n, ops.payload,
+                   ops.payload_h);
+    }
   }
 }
 } // namespace
@@ -318,10 +344,13 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
 #ifdef MPI_PARALLEL
   if (!coal_comm) Kokkos::fence();
 #endif
+  // Buffers of variable-length pack ops send their payload, all others the whole buffer
+  const bool variable_length = cache.bnd_ops.variable_length;
   for (std::size_t ibuf = 0; ibuf < cache.buf_vec.size(); ++ibuf) {
     auto &buf = *cache.buf_vec[ibuf];
+    const int len = variable_length ? cache.bnd_ops.payload_h(ibuf) : -1;
     if (!Globals::sparse_config.enabled) {
-      buf.Send(coal_comm);
+      buf.Send(coal_comm, len);
     } else {
       // Reduce flags over all of the teams that contributed to filling a given buffer
       bool sending_nonz{false};
@@ -329,7 +358,7 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
         sending_nonz = sending_nonz || sending_nonzero_flags_h(i);
 
       if (sending_nonz) {
-        buf.Send(coal_comm);
+        buf.Send(coal_comm, len);
       } else {
         buf.SendNull(coal_comm);
       }
