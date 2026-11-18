@@ -24,6 +24,7 @@
 #include <string>
 #include <type_traits>
 #include <typeinfo>
+#include <utility>
 
 #include "basic_types.hpp"
 #include "bvals/comms/bnd_info.hpp"
@@ -50,9 +51,37 @@ using BndOpIdxHost_t = typename BndOpIdx_t::host_mirror_type;
 // bucket holds same-level boundaries only; boundaries to coarser or finer neighbors take
 // the default copy and the variable's prolongation/restriction ops. Ready-made ops are
 // in bvals/comms/bnd_ops_library.hpp.
-using BoundaryOp_t =
-    std::function<void(MeshData<Real> *, const BndInfoArr_t &, const BndInfoArrHost_t &,
-                       const BndOpIdx_t &, const BndOpIdxHost_t &, std::size_t)>;
+//
+// Variable-length ops take two more arguments, the payload lengths (device, host),
+// indexed like the BndInfo array (payload_h(idx_h(n))). A buffer's capacity is its
+// allocated size, info_h(i).buf.size(). Pack: payload_h is preset to the capacity and
+// the op writes into payload_h the number of leading buffer elements it filled (at least
+// 1, at most the capacity); only those are sent. Unpack: payload_h and payload hold the
+// number of elements received.
+using BoundaryOp_t = std::function<void(
+    MeshData<Real> *, const BndInfoArr_t &, const BndInfoArrHost_t &, const BndOpIdx_t &,
+    const BndOpIdxHost_t &, std::size_t, const BndPayload_t &, const BndPayloadHost_t &)>;
+
+namespace boundary_ops {
+namespace impl {
+// Whether Op::F (F = Pack or Unpack) takes the payload lengths
+#define PARTHENON_BND_OP_TAKES_PAYLOAD(F)                                                \
+  template <class Op, class = void>                                                      \
+  struct F##TakesPayload : std::false_type {};                                           \
+  template <class Op>                                                                    \
+  struct F##TakesPayload<                                                                \
+      Op,                                                                                \
+      std::void_t<decltype(Op::F(                                                        \
+          std::declval<MeshData<Real> *>(), std::declval<const BndInfoArr_t &>(),        \
+          std::declval<const BndInfoArrHost_t &>(), std::declval<const BndOpIdx_t &>(),  \
+          std::declval<const BndOpIdxHost_t &>(), std::size_t{},                         \
+          std::declval<const BndPayload_t &>(),                                          \
+          std::declval<const BndPayloadHost_t &>()))>> : std::true_type {};
+PARTHENON_BND_OP_TAKES_PAYLOAD(Pack)
+PARTHENON_BND_OP_TAKES_PAYLOAD(Unpack)
+#undef PARTHENON_BND_OP_TAKES_PAYLOAD
+} // namespace impl
+} // namespace boundary_ops
 
 // Type-erased pack/unpack ops of a variable, identified (and hashed) by the typeids of
 // the registered op types, like refinement::RefinementFunctions_t. An empty op means the
@@ -68,17 +97,32 @@ struct BoundaryFunctions_t {
     if constexpr (!std::is_same_v<UnpackOp, boundary_ops::DefaultUnpack>) {
       funcs.unpack = [](MeshData<Real> *md, const BndInfoArr_t &info,
                         const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
-                        const BndOpIdxHost_t &idx_h, std::size_t nbuffers) {
-        UnpackOp::Unpack(md, info, info_h, idx, idx_h, nbuffers);
+                        const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                        const BndPayload_t &payload, const BndPayloadHost_t &payload_h) {
+        if constexpr (boundary_ops::impl::UnpackTakesPayload<UnpackOp>::value) {
+          UnpackOp::Unpack(md, info, info_h, idx, idx_h, nbuffers, payload, payload_h);
+        } else {
+          UnpackOp::Unpack(md, info, info_h, idx, idx_h, nbuffers);
+        }
       };
     }
     if constexpr (!std::is_same_v<PackOp, boundary_ops::DefaultPack>) {
       funcs.pack = [](MeshData<Real> *md, const BndInfoArr_t &info,
                       const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
-                      const BndOpIdxHost_t &idx_h, std::size_t nbuffers) {
-        PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers);
+                      const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                      const BndPayload_t &payload, const BndPayloadHost_t &payload_h) {
+        if constexpr (boundary_ops::impl::PackTakesPayload<PackOp>::value) {
+          PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers, payload, payload_h);
+        } else {
+          PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers);
+        }
       };
     }
+    funcs.variable_length = boundary_ops::impl::PackTakesPayload<PackOp>::value;
+    funcs.unpack_reads_payload = boundary_ops::impl::UnpackTakesPayload<UnpackOp>::value;
+    static_assert(!boundary_ops::impl::PackTakesPayload<PackOp>::value ||
+                      !std::is_same_v<UnpackOp, boundary_ops::DefaultUnpack>,
+                  "A variable-length pack op needs an unpack op");
     return funcs;
   }
 
@@ -91,6 +135,10 @@ struct BoundaryFunctions_t {
 
   BoundaryOp_t pack;
   BoundaryOp_t unpack;
+  // The pack op reports payload lengths (buffers are sent with that length)
+  bool variable_length = false;
+  // The unpack op reads the received payload lengths
+  bool unpack_reads_payload = false;
 
  private:
   std::string label_;
@@ -109,7 +157,8 @@ struct FluxCorrectionFunctions_t {
     FluxCorrectionFunctions_t funcs(typeid(CombineOp).name());
     funcs.combine = [](MeshData<Real> *md, const BndInfoArr_t &info,
                        const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
-                       const BndOpIdxHost_t &idx_h, std::size_t nbuffers) {
+                       const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                       const BndPayload_t &, const BndPayloadHost_t &) {
       CombineOp::Combine(md, info, info_h, idx, idx_h, nbuffers);
     };
     return funcs;

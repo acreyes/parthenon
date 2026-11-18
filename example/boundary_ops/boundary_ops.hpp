@@ -47,6 +47,22 @@ int CheckGhosts(Mesh *pmesh, int *naveraged);
 constexpr int kMaxShared = 16;
 int CheckFluxes(Mesh *pmesh, int nshared[kMaxShared], std::uint64_t *hash);
 
+// Variable-length payloads: the pack op of "varlen" fills and sends a cycle- and
+// neighbor-dependent number of leading buffer elements, the unpack op checks the
+// received length and values.
+KOKKOS_INLINE_FUNCTION int VarlenLength(int send_gid, int recv_gid, int cycle,
+                                        int capacity) {
+  return 1 + (7 * send_gid + 3 * recv_gid + 5 * cycle) % capacity;
+}
+KOKKOS_INLINE_FUNCTION Real VarlenValue(int send_gid, int recv_gid, int m, int cycle) {
+  return send_gid + 1.0e3 * recv_gid + 1.0e6 * m + 0.5 * cycle;
+}
+struct VarlenStats {
+  std::int64_t messages = 0, sent = 0, capacity = 0, wrong = 0;
+};
+void SetCycle(Mesh *pmesh, int cycle);
+VarlenStats GetVarlenStats();
+
 } // namespace boundary_ops
 
 #endif // EXAMPLE_BOUNDARY_OPS_BOUNDARY_OPS_HPP_
