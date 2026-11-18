@@ -14,6 +14,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #ifndef BVALS_COMMS_BVALS_IN_ONE_HPP_
 #define BVALS_COMMS_BVALS_IN_ONE_HPP_
@@ -94,7 +95,14 @@ static TaskStatus SetFluxCorrections(std::shared_ptr<MeshData<Real>> &md) {
   return SetBounds<BoundaryType::flxcor_recv>(md);
 }
 
-// Adds all relevant flux correction tasks to a single task list
+// True if a variable registered a flux-correction combine op
+// (Metadata::RegisterFluxCorrectionOps), in which case flux correction must run on
+// meshes without refinement too, and SetFluxCorrections must wait for
+// LoadAndSendFluxCorrections of the same MeshData.
+bool HasFluxCorrectionOps(std::shared_ptr<MeshData<Real>> &md);
+
+// Adds all relevant flux correction tasks to a single task list. Runs if multilevel or
+// if a variable registered a flux-correction combine op.
 TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                               std::shared_ptr<MeshData<Real>> &md, bool multilevel);
 

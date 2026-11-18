@@ -209,43 +209,52 @@ void UnpackDefaultBuffers(const BndInfoArr_t &bnd_info,
       });
 }
 
-// Call the registered pack (send) or unpack (receive) op of every bucket of the cache.
-// For variable-length ops, preset the payload lengths to the buffer capacity and check
-// them after Pack, or set them from the received messages before Unpack.
+// Call the registered op of every bucket of the cache: pack when sending, unpack when
+// receiving ghosts, combine when receiving flux corrections. For variable-length ops,
+// preset the payload lengths to the buffer capacity and check them after Pack, or set
+// them from the received messages before Unpack.
+template <BoundaryType bound_type>
 void ApplyBoundaryOps(MeshData<Real> *md, BvarsSubCache_t *pcache, bool send) {
   auto &cache = *pcache;
   auto &ops = cache.bnd_ops;
   StateDescriptor *pkg = md->GetMeshPointer()->resolved_packages.get();
-  for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs()) {
+  auto apply = [&](const BoundaryOp_t &op, std::size_t id, bool variable_length,
+                   bool reads_payload) {
     const std::size_t n = ops.buffer_subset_sizes[id];
-    if (n == 0) continue;
+    if (n == 0) return;
     BndOpIdx_t subset = Kokkos::subview(ops.buffer_subsets, id, Kokkos::ALL());
     BndOpIdxHost_t subset_h = Kokkos::subview(ops.buffer_subsets_h, id, Kokkos::ALL());
-    if (send) {
-      if (funcs.variable_length) {
-        for (std::size_t b = 0; b < n; ++b)
-          ops.payload_h(subset_h(b)) = cache.bnd_info_h(subset_h(b)).buf.size();
+    if (variable_length) {
+      for (std::size_t b = 0; b < n; ++b)
+        ops.payload_h(subset_h(b)) = cache.bnd_info_h(subset_h(b)).buf.size();
+    }
+    if (reads_payload) {
+      for (std::size_t b = 0; b < n; ++b)
+        ops.payload_h(subset_h(b)) = cache.buf_vec[subset_h(b)]->GetPayloadSize();
+      Kokkos::deep_copy(ops.payload, ops.payload_h);
+    }
+    op(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n, ops.payload,
+       ops.payload_h);
+    if (variable_length) {
+      for (std::size_t b = 0; b < n; ++b) {
+        const auto i = subset_h(b);
+        const int capacity = cache.bnd_info_h(i).buf.size();
+        PARTHENON_REQUIRE_THROWS(
+            ops.payload_h(i) >= 1 && ops.payload_h(i) <= capacity,
+            "Boundary pack op payload must be in [1, buffer size]; to send more, "
+            "allocate larger buffers (lane BufferSize + RebuildLane).");
       }
-      funcs.pack(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n, ops.payload,
-                 ops.payload_h);
-      if (funcs.variable_length) {
-        for (std::size_t b = 0; b < n; ++b) {
-          const auto i = subset_h(b);
-          const int capacity = cache.bnd_info_h(i).buf.size();
-          PARTHENON_REQUIRE_THROWS(
-              ops.payload_h(i) >= 1 && ops.payload_h(i) <= capacity,
-              "Boundary pack op payload must be in [1, buffer size]; to send more, "
-              "allocate larger buffers (lane BufferSize + RebuildLane).");
-        }
-      }
-    } else {
-      if (funcs.unpack_reads_payload) {
-        for (std::size_t b = 0; b < n; ++b)
-          ops.payload_h(subset_h(b)) = cache.buf_vec[subset_h(b)]->GetPayloadSize();
-        Kokkos::deep_copy(ops.payload, ops.payload_h);
-      }
-      funcs.unpack(md, cache.bnd_info, cache.bnd_info_h, subset, subset_h, n, ops.payload,
-                   ops.payload_h);
+    }
+  };
+  if constexpr (bound_type == BoundaryType::flxcor_recv) {
+    for (const auto &[funcs, id] : pkg->FluxCorrectionFncsToIDs())
+      apply(funcs.combine, id, false, false);
+  } else {
+    for (const auto &[funcs, id] : pkg->BoundaryFncsToIDs()) {
+      if (send)
+        apply(funcs.pack, id, funcs.variable_length, false);
+      else
+        apply(funcs.unpack, id, false, funcs.unpack_reads_payload);
     }
   }
 }
@@ -322,7 +331,7 @@ TaskStatus SendBoundBufsWithRestrictOption(std::shared_ptr<MeshData<Real>> &md,
       PackDefaultBuffers<bound_type, true>(
           bnd_info, sending_nonzero_flags, cache.bnd_ops.default_subset,
           cache.bnd_ops.ndefault, nteams_per_buffer, work_chunk_size);
-    ApplyBoundaryOps(md.get(), &cache, true);
+    ApplyBoundaryOps<bound_type>(md.get(), &cache, true);
   }
 
   // Send buffers
@@ -501,7 +510,7 @@ TaskStatus SetBounds(std::shared_ptr<MeshData<Real>> &md) {
       UnpackDefaultBuffers<bound_type, true>(bnd_info, cache.bnd_ops.default_subset,
                                              cache.bnd_ops.ndefault, nteams_per_buffer,
                                              work_chunk_size);
-    ApplyBoundaryOps(md.get(), &cache, false);
+    ApplyBoundaryOps<bound_type>(md.get(), &cache, false);
   }
 #ifdef MPI_PARALLEL
   Kokkos::fence();
@@ -616,12 +625,20 @@ bool IsMeshMultilevel(std::shared_ptr<MeshData<Real>> &md) {
   return md->GetMeshPointer()->multilevel;
 }
 
+bool HasFluxCorrectionOps(std::shared_ptr<MeshData<Real>> &md) {
+  return md->GetMeshPointer()->resolved_packages->NumFluxCorrectionFuncs() > 0;
+}
+
 TaskID AddFluxCorrectionTasks(TaskID dependency, TaskList &tl,
                               std::shared_ptr<MeshData<Real>> &md, bool multilevel) {
-  if (!multilevel) return dependency;
-  tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::flxcor_send>), md);
+  const bool combine = HasFluxCorrectionOps(md);
+  if (!multilevel && !combine) return dependency;
+  auto send = tl.AddTask(dependency, TF(SendBoundBufs<BoundaryType::flxcor_send>), md);
   auto receive =
       tl.AddTask(dependency, TF(ReceiveBoundBufs<BoundaryType::flxcor_recv>), md);
+  // Combine ops overwrite fluxes that the send must have packed first
+  if (combine)
+    return tl.AddTask(send | receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
   return tl.AddTask(receive, TF(SetBounds<BoundaryType::flxcor_recv>), md);
 }
 } // namespace parthenon
