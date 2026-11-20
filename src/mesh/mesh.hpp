@@ -193,6 +193,24 @@ class Mesh {
   void OutputCycleDiagnostics();
   void LoadBalancingAndAdaptiveMeshRefinement(ParameterInput *pin,
                                               ApplicationInput *app_in);
+
+  // Block permutation. Moves the content of every block (the remeshed variables, i.e.
+  // MeshBlock::vars_cc_, with their sparse allocation state, and the block's
+  // load-balance cost) from gid old to gid new_gid_of_old[old]. Block locations, the
+  // forest and the gids' coordinates stay put, so this is meant for pools of blocks
+  // whose position on the mesh carries no physics (and for meshes without swarms). The
+  // ranks are recomputed for the permuted costs (and LoadBalanceGroups), content moves
+  // with the remeshing send/receive, and the neighbors, boundary buffers and provider
+  // lanes are rebuilt (the providers are called again, so the user's graph must already
+  // be in the new gids) and ghosts filled, as after load balancing. Collective; every
+  // rank passes the same permutation, computed from global data.
+  void PermuteBlocks(const std::vector<int> &new_gid_of_old, ParameterInput *pin,
+                     ApplicationInput *app_in);
+  // Called by the driver after load balancing: if BlockPermutation is set and
+  // parthenon/loadbalancing/permute_interval > 0 divides tm.ncycle, permutes the blocks
+  // with the permutation it returns (if not empty). Returns whether blocks were moved.
+  bool PermuteBlocksIfDue(ParameterInput *pin, ApplicationInput *app_in,
+                          SimTime const &tm);
   int DefaultPackSize() {
     if (use_pack_size_) {
       return default_pack_size_ < 1 ? std::max(static_cast<int>(block_list.size()), 1)
@@ -279,6 +297,11 @@ class Mesh {
                                                    SimTime const &);
   std::function<void(Mesh *, ParameterInput *, SimTime const &)>
       PostStepUserDiagnosticsInLoop = PostStepUserDiagnosticsInLoopDefault;
+  // See ApplicationInput::MeshBlockPermutation and ApplicationInput::LoadBalanceGroups
+  std::function<std::vector<int>(Mesh *, ParameterInput *, SimTime const &)>
+      BlockPermutation = nullptr;
+  std::function<std::vector<int>(Mesh *, const std::vector<LogicalLocation> &)>
+      LoadBalanceGroups = nullptr;
 
   int GetRootLevel() const noexcept { return root_level; }
   int GetLegacyTreeRootLevel() const {
@@ -502,6 +525,7 @@ class Mesh {
   bool lb_flag_, lb_automatic_, lb_manual_;
   double lb_tolerance_;
   int lb_interval_;
+  int permute_interval_ = 0;
 
   // size of default MeshBlockPacks
   bool use_pack_size_;
@@ -534,6 +558,7 @@ class Mesh {
                       const std::unordered_map<LogicalLocation, int> &dealloc_count = {});
   void DoStaticRefinement(ParameterInput *pin);
   void CalculateLoadBalance(std::vector<double> const &costlist,
+                            const std::vector<LogicalLocation> &locs,
                             std::vector<int> &ranklist, std::vector<int> &nslist,
                             std::vector<int> &nblist);
   void ResetLoadBalanceVariables();

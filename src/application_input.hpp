@@ -32,6 +32,7 @@
 #include "parthenon_arrays.hpp"
 
 namespace parthenon {
+class LogicalLocation;
 class Mesh;
 class MeshBlock;
 class MeshBlockApplicationData;
@@ -78,6 +79,17 @@ class ApplicationInput {
 
   std::function<void(Mesh *, ParameterInput *, SimTime &)> UserWorkAfterLoop = nullptr;
   std::function<void(Mesh *, ParameterInput *, SimTime &)> UserWorkBeforeLoop = nullptr;
+
+  // Block permutation (Mesh::PermuteBlocks), called on every rank every
+  // parthenon/loadbalancing/permute_interval cycles. Returns new_gid_of_old (the same on
+  // every rank), or an empty vector to keep the blocks where they are.
+  std::function<std::vector<int>(Mesh *, ParameterInput *, SimTime const &)>
+      MeshBlockPermutation = nullptr;
+  // Load-balance groups: a label per gid of the given block list (the same on every
+  // rank). Ranks are only cut where the label changes, so a run of equal labels stays on
+  // one rank. An empty vector means no constraint.
+  std::function<std::vector<int>(Mesh *, const std::vector<LogicalLocation> &)>
+      LoadBalanceGroups = nullptr;
 
   // MeshBlock functions
   std::function<std::unique_ptr<MeshBlockApplicationData>(MeshBlock *, ParameterInput *)>
