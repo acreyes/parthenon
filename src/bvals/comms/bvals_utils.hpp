@@ -52,6 +52,10 @@ inline std::string GetLabel(Mesh::channel_key_t &key) {
          ", var: " + GetVariable(key) + ", location: " + std::to_string(GetLocIdx(key)) +
          ", other:" + std::to_string(GetOther(key));
 }
+// On provider lanes the location of a channel is its pair of channel ids
+inline int LaneLocIdx(int send_channel, int recv_channel) {
+  return send_channel * MaxLaneChannels + recv_channel;
+}
 // SendKey/ReceiveKey are templated on the field type since they only need
 // field->label().
 template <class Field>
@@ -59,6 +63,9 @@ inline Mesh::channel_key_t SendKey(const MeshBlock *pmb, const NeighborBlock &nb
                                    const Field &pcv, BoundaryType btype, int id) {
   const int sender_id = pmb->gid;
   const int receiver_id = nb.gid;
+  if (IsLaneBoundary(btype))
+    return {sender_id, receiver_id, pcv->label(),
+            LaneLocIdx(nb.lane_channel, nb.lane_nb_channel), 2 * id};
   const int location_idx = nb.offsets.GetIdx();
 
   int gmg_self_comm = (nb.gid == pmb->gid && (btype == BoundaryType::gmg_restrict_recv ||
@@ -75,6 +82,9 @@ inline Mesh::channel_key_t ReceiveKey(const MeshBlock *pmb, const NeighborBlock 
                                       const Field &pcv, BoundaryType btype, int id) {
   const int receiver_id = pmb->gid;
   const int sender_id = nb.gid;
+  if (IsLaneBoundary(btype))
+    return {sender_id, receiver_id, pcv->label(),
+            LaneLocIdx(nb.lane_nb_channel, nb.lane_channel), 2 * id};
   const int location_idx = nb.lcoord_trans.Transform(nb.offsets).GetReverseIdx();
   int gmg_self_comm = (nb.gid == pmb->gid && (btype == BoundaryType::gmg_restrict_recv ||
                                               btype == BoundaryType::gmg_restrict_send))
@@ -104,6 +114,8 @@ inline Mesh::channel_key_t GetChannelKey(BndId &in) {
 // simple tests, this did not have a big impact on performance but I think it is useful to
 // leave the machinery here since it doesn't seem to have a big overhead associated with
 // it (LFR).
+//
+// The sub-cache of a provider lane holds the boundaries of its lane (pcache->lane) only.
 template <BoundaryType bound_type, class COMM_MAP, class F>
 void InitializeBufferCache(std::shared_ptr<MeshData<Real>> &md, COMM_MAP *comm_map,
                            BvarsSubCache_t *pcache, F KeyFunc) {
@@ -117,7 +129,7 @@ void InitializeBufferCache(std::shared_ptr<MeshData<Real>> &md, COMM_MAP *comm_m
 
   int boundary_idx = 0;
   ForEachBoundary<bound_type>(
-      md, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
+      md, pcache->lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
         auto key = KeyFunc(pmb, nb, v, bound_type, md->GetBoundBufferId(bound_type));
         PARTHENON_DEBUG_REQUIRE(comm_map->count(key) > 0,
                                 "Boundary communicator does not exist");
@@ -151,72 +163,91 @@ void InitializeBufferCache(std::shared_ptr<MeshData<Real>> &md, COMM_MAP *comm_m
     (pcache->idx_vec)[std::get<1>(t)] = buff_idx++;
   });
   pcache->epoch = comm_map->GetCurrentEpoch();
+  if (pcache->lane >= 0) pcache->lane_epoch = comm_map->GetLaneEpoch(pcache->lane);
+  ++pcache->initializations;
+}
+
+// The sub-cache of md for a boundary type; on provider lanes, of one lane
+template <BoundaryType BOUND_TYPE, bool SENDER>
+inline BvarsSubCache_t &GetBvarsSubCache(MeshData<Real> *md, [[maybe_unused]] int lane) {
+  if constexpr (IsLaneBoundary(BOUND_TYPE)) {
+    PARTHENON_DEBUG_REQUIRE(lane >= 0, "Lane exchanges need a lane.");
+    return md->GetBvarsCache().GetLaneSubCache(BOUND_TYPE, SENDER, lane);
+  } else {
+    return md->GetBvarsCache().GetSubCache(BOUND_TYPE, SENDER);
+  }
 }
 
 template <BoundaryType BOUND_TYPE, bool SENDER>
-inline auto CheckSendBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md) {
+inline auto CheckSendBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md,
+                                           int lane = -1) {
   using namespace loops;
   using namespace loops::shorthands;
-  BvarsSubCache_t &cache = md->GetBvarsCache().GetSubCache(BOUND_TYPE, SENDER);
+  BvarsSubCache_t &cache = GetBvarsSubCache<BOUND_TYPE, SENDER>(md.get(), lane);
 
   bool rebuild = false;
   bool other_communication_unfinished = false;
   int nbound = 0;
-  ForEachBoundary<BOUND_TYPE>(md, [&](auto pmb, sp_mbd_t rc, const nb_t &nb,
-                                      const sp_cv_t v) {
-    const std::size_t ibuf = cache.idx_vec[nbound];
-    auto &buf = *(cache.buf_vec[ibuf]);
+  ForEachBoundary<BOUND_TYPE>(
+      md, cache.lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
+        const std::size_t ibuf = cache.idx_vec[nbound];
+        auto &buf = *(cache.buf_vec[ibuf]);
 
-    if (!buf.IsAvailableForWrite()) other_communication_unfinished = true;
+        if (!buf.IsAvailableForWrite()) other_communication_unfinished = true;
 
-    if (v->IsAllocated()) {
-      buf.Allocate();
-    } else {
-      buf.Free();
-    }
+        if (v->IsAllocated()) {
+          buf.Allocate();
+        } else {
+          buf.Free();
+        }
 
-    if (ibuf < cache.bnd_info_h.size()) {
-      if (cache.bnd_info_h(ibuf).alloc_status != v->GetAllocationStatus()) rebuild = true;
-      rebuild = rebuild || !UsingSameResource(cache.bnd_info_h(ibuf).buf, buf.buffer());
-    } else {
-      rebuild = true;
-    }
-    ++nbound;
-  });
+        if (ibuf < cache.bnd_info_h.size()) {
+          if (cache.bnd_info_h(ibuf).alloc_status != v->GetAllocationStatus())
+            rebuild = true;
+          rebuild =
+              rebuild || !UsingSameResource(cache.bnd_info_h(ibuf).buf, buf.buffer());
+        } else {
+          rebuild = true;
+        }
+        ++nbound;
+      });
   return std::make_tuple(rebuild, nbound, other_communication_unfinished);
 }
 
 template <BoundaryType BOUND_TYPE, bool SENDER>
-inline auto CheckReceiveBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md) {
+inline auto CheckReceiveBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md,
+                                              int lane = -1) {
   using namespace loops;
   using namespace loops::shorthands;
-  BvarsSubCache_t &cache = md->GetBvarsCache().GetSubCache(BOUND_TYPE, SENDER);
+  BvarsSubCache_t &cache = GetBvarsSubCache<BOUND_TYPE, SENDER>(md.get(), lane);
 
   bool rebuild = false;
   int nbound = 0;
 
-  ForEachBoundary<BOUND_TYPE>(md, [&](auto pmb, sp_mbd_t rc, const nb_t &nb,
-                                      const sp_cv_t v) {
-    const std::size_t ibuf = cache.idx_vec[nbound];
-    auto &buf = *cache.buf_vec[ibuf];
-    if (ibuf < cache.bnd_info_h.size()) {
-      if (cache.bnd_info_h(ibuf).alloc_status != v->GetAllocationStatus()) rebuild = true;
-      rebuild = rebuild || !UsingSameResource(cache.bnd_info_h(ibuf).buf, buf.buffer());
+  ForEachBoundary<BOUND_TYPE>(
+      md, cache.lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
+        const std::size_t ibuf = cache.idx_vec[nbound];
+        auto &buf = *cache.buf_vec[ibuf];
+        if (ibuf < cache.bnd_info_h.size()) {
+          if (cache.bnd_info_h(ibuf).alloc_status != v->GetAllocationStatus())
+            rebuild = true;
+          rebuild =
+              rebuild || !UsingSameResource(cache.bnd_info_h(ibuf).buf, buf.buffer());
 
-      if ((buf.GetState() == BufferState::received) &&
-          !cache.bnd_info_h(ibuf).buf_allocated) {
-        rebuild = true;
-      }
+          if ((buf.GetState() == BufferState::received) &&
+              !cache.bnd_info_h(ibuf).buf_allocated) {
+            rebuild = true;
+          }
 
-      if ((buf.GetState() == BufferState::received_null) &&
-          cache.bnd_info_h(ibuf).buf_allocated) {
-        rebuild = true;
-      }
-    } else {
-      rebuild = true;
-    }
-    ++nbound;
-  });
+          if ((buf.GetState() == BufferState::received_null) &&
+              cache.bnd_info_h(ibuf).buf_allocated) {
+            rebuild = true;
+          }
+        } else {
+          rebuild = true;
+        }
+        ++nbound;
+      });
   return std::make_tuple(rebuild, nbound);
 }
 
@@ -261,13 +292,17 @@ using F_PRORES_INFO = std::function<ProResInfo(MeshBlock *pmb, const NeighborBlo
 
 template <BoundaryType BOUND_TYPE, bool SENDER>
 inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
-                               F_BND_INFO BndInfoCreator,
-                               F_PRORES_INFO ProResInfoCreator) {
+                               F_BND_INFO BndInfoCreator, F_PRORES_INFO ProResInfoCreator,
+                               int lane = -1) {
   using namespace loops;
   using namespace loops::shorthands;
-  BvarsSubCache_t &cache = md->GetBvarsCache().GetSubCache(BOUND_TYPE, SENDER);
+  BvarsSubCache_t &cache = GetBvarsSubCache<BOUND_TYPE, SENDER>(md.get(), lane);
   cache.bnd_info = BndInfoArr_t(ViewOfViewAlloc("bnd_info"), nbound);
   cache.bnd_info_h = create_view_of_view_mirror(cache.bnd_info);
+
+  // Lane neighbors are same-level by contract, so lane caches build no
+  // prolongation/restriction info
+  constexpr bool on_lane = IsLaneBoundary(BOUND_TYPE);
 
   // prolongation/restriction sub-sets
   // TODO(JMM): Right now I exclude fluxcorrection boundaries but if
@@ -275,14 +310,21 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   // this.
   Mesh *pmesh = md->GetParentPointer();
   StateDescriptor *pkg = (pmesh->resolved_packages).get();
-  cache.prores_cache.Initialize(nbound, pkg);
+  if constexpr (on_lane) {
+    cache.prores_cache.clear();
+  } else {
+    cache.prores_cache.Initialize(nbound, pkg);
+  }
 
   // Registered boundary ops act on the variable's own buffers; flux correction has
   // combine ops on the receiving side only
   constexpr bool flx_send = BOUND_TYPE == BoundaryType::flxcor_send;
   constexpr bool flx_recv = BOUND_TYPE == BoundaryType::flxcor_recv;
+  // On lanes the flux exchange has registered ops on both sides (pack and combine)
+  constexpr bool lane_flx = BOUND_TYPE == BoundaryType::lane_flxcor_send ||
+                            BOUND_TYPE == BoundaryType::lane_flxcor_recv;
   std::size_t nfuncs = 0;
-  if constexpr (flx_recv) {
+  if constexpr (flx_recv || lane_flx) {
     nfuncs = pkg->NumFluxCorrectionFuncs();
   } else if constexpr (!flx_send) {
     nfuncs = pkg->NumBoundaryFuncs();
@@ -299,7 +341,7 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
 
   int ibound = 0;
   ForEachBoundary<BOUND_TYPE>(
-      md, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
+      md, cache.lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
         // bnd_info
         const std::size_t ibuf = cache.idx_vec[ibound];
         cache.bnd_info_h(ibuf) = BndInfoCreator(pmb, nb, v, cache.buf_vec[ibuf]);
@@ -308,25 +350,33 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
         bi.send_gid = SENDER ? pmb->gid : nb.gid;
         bi.recv_gid = SENDER ? nb.gid : pmb->gid;
         bi.offsets = nb.offsets;
+        if constexpr (on_lane) {
+          bi.channel = nb.lane_channel;
+          bi.nb_channel = nb.lane_nb_channel;
+        }
 
         if (use_ops) {
           int id = -1;
-          if constexpr (flx_recv) {
+          if constexpr (lane_flx) {
+            id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
+          } else if constexpr (flx_recv) {
             // Combine ops get the same-level boundaries only
             if (v->HasFluxCorrectionOps() && nb.loc.level() == pmb->loc.level())
               id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
           } else {
             const auto &funcs = v->GetBoundaryFunctions();
-            // Ops get the same-level boundaries only; coarse-fine boundaries keep the
-            // default copy and the variable's prolongation/restriction ops
+            // Ops get the same-level boundaries only (lane neighbors are same-level by
+            // contract); coarse-fine boundaries keep the default copy and the variable's
+            // prolongation/restriction ops
             if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
-                nb.loc.level() == pmb->loc.level()) {
+                (on_lane || nb.loc.level() == pmb->loc.level())) {
               id = pkg->BoundaryFuncID(funcs);
               variable_length = variable_length || (SENDER && funcs.variable_length);
             }
           }
           if (id >= 0) {
-            op_keys.emplace_back(id, bi.block, v->label(), nb.offsets.GetIdx(), nb.gid,
+            op_keys.emplace_back(id, bi.block, v->label(),
+                                 on_lane ? nb.lane_channel : nb.offsets.GetIdx(), nb.gid,
                                  ibound, ibuf);
           } else {
             default_bufs.push_back(ibuf);
@@ -336,13 +386,14 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
         // subsets ordering is same as in cache.bnd_info
         // RefinementFunctions_t owns all relevant functionality, so
         // only one ParArray2D needed.
-        cache.prores_cache.RegisterRegionHost(ibuf, ProResInfoCreator(pmb, nb, v),
-                                              v.get(), pkg);
+        if constexpr (!on_lane)
+          cache.prores_cache.RegisterRegionHost(ibuf, ProResInfoCreator(pmb, nb, v),
+                                                v.get(), pkg);
 
         ++ibound;
       });
   Kokkos::deep_copy(cache.bnd_info, cache.bnd_info_h);
-  cache.prores_cache.CopyToDevice();
+  if constexpr (!on_lane) cache.prores_cache.CopyToDevice();
   BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, nfuncs, nbound);
   cache.bnd_ops.variable_length = variable_length;
   PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,

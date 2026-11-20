@@ -102,8 +102,9 @@ inline auto &GetNeighborsOnFinerGMGGrid(MeshBlock *pmb, const GridIdentifier &gr
 // routines and allows for easy selection of a subset of the boundaries based
 // on the template parameter BoundaryType. [Really, this probably does not
 // need to be a template parameter, it could just be a function argument]
+// On provider lanes, lane >= 0 selects the variables of that lane only.
 template <BoundaryType bound = BoundaryType::any, class MD, class F>
-inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
+inline void ForEachBoundary(std::shared_ptr<MD> &md, [[maybe_unused]] int lane, F func) {
   int fine_level = md->grid.logical_level();
   for (int block = 0; block < md->NumBlocks(); ++block) {
     auto &rc = md->GetBlockData(block);
@@ -152,8 +153,26 @@ inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
             }
           }
         }
+      } else if constexpr (bound == BoundaryType::lane) {
+        // Lane variables with registered boundary ops, between their lane's neighbors
+        if (v->IsSet(Metadata::Lane) && !v->IsSet(Metadata::Flux) &&
+            (lane < 0 || v->GetLane() == lane) && v->HasBoundaryOps()) {
+          for (auto &nb : pmb->GetLaneNeighbors(v->GetLane())) {
+            if (func_caller(func, pmb, rc, nb, v) == LoopControl::break_out) return;
+          }
+        }
+      } else if constexpr (IsLaneBoundary(bound)) {
+        // Fluxes of lane variables with a registered combine op
+        if (v->IsSet(Metadata::Lane) && v->IsSet(Metadata::Flux) &&
+            (lane < 0 || v->GetLane() == lane) && v->HasFluxCorrectionOps()) {
+          for (auto &nb : pmb->GetLaneNeighbors(v->GetLane())) {
+            if (func_caller(func, pmb, rc, nb, v) == LoopControl::break_out) return;
+          }
+        }
       } else {
-        if (v->IsSet(Metadata::FillGhost) || v->IsSet(Metadata::Flux)) {
+        // Lane variables are never FillGhost; their fluxes go only on their lane
+        if (v->IsSet(Metadata::FillGhost) ||
+            (v->IsSet(Metadata::Flux) && !v->IsSet(Metadata::Lane))) {
           [[maybe_unused]] constexpr bool flx_bound =
               bound == BoundaryType::flxcor_send || bound == BoundaryType::flxcor_recv;
           const auto &neighbors = pmb->GetNeighbors();
@@ -191,6 +210,11 @@ inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
       }
     }
   }
+}
+
+template <BoundaryType bound = BoundaryType::any, class MD, class F>
+inline void ForEachBoundary(std::shared_ptr<MD> &md, F func) {
+  ForEachBoundary<bound>(md, -1, func);
 }
 
 } // namespace loops

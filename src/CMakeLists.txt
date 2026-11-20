@@ -220,6 +220,7 @@ add_library(parthenon
   mesh/mesh_refinement.hpp
   mesh/mesh-amr_loadbalance.cpp
   mesh/mesh-gmg.cpp
+  mesh/mesh-lanes.cpp
   mesh/mesh.cpp
   mesh/mesh.hpp
   mesh/mesh_neighbors.hpp

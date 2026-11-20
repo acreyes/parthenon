@@ -25,6 +25,7 @@
 // TODO(felker): deduplicate forward declarations
 // TODO(felker): consider moving enums and structs in a new file? bvals_structs.hpp?
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -93,12 +94,33 @@ struct NeighborBlock {
   block_ownership_t ownership;
   // Logical coordinate transformation from the main block to this neighbor
   forest::LogicalCoordinateTransformation lcoord_trans;
+  // Provider-lane neighbors only (see Mesh::RegisterNeighborProvider): the channel of
+  // the exchange on this block and on the neighbor; -1 for geometric neighbors
+  int lane_channel = -1, lane_nb_channel = -1;
 
   NeighborBlock();
   NeighborBlock(Mesh *mesh, LogicalLocation loc, LogicalLocation origin_loc, int rank,
                 int gid, Kokkos::Array<int, 3> offsets_in, int bid, int target_id,
                 int fi1, int fi2, std::size_t block_coarsenings);
 };
+
+//----------------------------------------------------------------------------------------
+//! \struct LaneNeighbor
+//  \brief One neighbor of a block on a provider lane: the neighbor's gid, the channel id
+//  of the exchange on this block and on the neighbor. Channel ids are user labels in
+//  [0, MaxLaneChannels), e.g. a local face or node index; a block may list the same gid
+//  more than once with different channels. The lane graph must be symmetric: if block a
+//  lists {b, ca, cb}, block b lists {a, cb, ca}.
+struct LaneNeighbor {
+  int gid;
+  int channel_me;
+  int channel_nb;
+};
+constexpr int MaxLaneChannels = 1024;
+
+// Fills the lane neighbors of one local block (the vector arrives empty)
+using NeighborProvider_t =
+    std::function<void(const MeshBlock &, std::vector<LaneNeighbor> &)>;
 
 //----------------------------------------------------------------------------------------
 //! \class BufferID
