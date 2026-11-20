@@ -310,13 +310,21 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   cache.bnd_info = BndInfoArr_t(ViewOfViewAlloc("bnd_info"), nbound);
   cache.bnd_info_h = create_view_of_view_mirror(cache.bnd_info);
 
+  // Lane neighbors are same-level by contract, so lane caches build no
+  // prolongation/restriction info
+  constexpr bool on_lane = IsLaneBoundary(BOUND_TYPE);
+
   // prolongation/restriction sub-sets
   // TODO(JMM): Right now I exclude fluxcorrection boundaries but if
   // we eventually had custom fluxcorrection ops, you could remove
   // this.
   Mesh *pmesh = md->GetParentPointer();
   StateDescriptor *pkg = (pmesh->resolved_packages).get();
-  cache.prores_cache.Initialize(nbound, pkg);
+  if constexpr (on_lane) {
+    cache.prores_cache.clear();
+  } else {
+    cache.prores_cache.Initialize(nbound, pkg);
+  }
 
   // Registered boundary ops act on the variable's own buffers; flux correction has
   // combine ops on the receiving side only
@@ -325,7 +333,6 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   // On lanes the flux exchange has registered ops on both sides (pack and combine)
   constexpr bool lane_flx = BOUND_TYPE == BoundaryType::lane_flxcor_send ||
                             BOUND_TYPE == BoundaryType::lane_flxcor_recv;
-  constexpr bool on_lane = IsLaneBoundary(BOUND_TYPE);
   std::size_t nfuncs = 0;
   if constexpr (flx_recv || lane_flx) {
     nfuncs = pkg->NumFluxCorrectionFuncs();
@@ -388,13 +395,14 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
         // subsets ordering is same as in cache.bnd_info
         // RefinementFunctions_t owns all relevant functionality, so
         // only one ParArray2D needed.
-        cache.prores_cache.RegisterRegionHost(ibuf, ProResInfoCreator(pmb, nb, v),
-                                              v.get(), pkg);
+        if constexpr (!on_lane)
+          cache.prores_cache.RegisterRegionHost(ibuf, ProResInfoCreator(pmb, nb, v),
+                                                v.get(), pkg);
 
         ++ibound;
       });
   Kokkos::deep_copy(cache.bnd_info, cache.bnd_info_h);
-  cache.prores_cache.CopyToDevice();
+  if constexpr (!on_lane) cache.prores_cache.CopyToDevice();
   BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, nfuncs, nbound);
   cache.bnd_ops.variable_length = variable_length;
   PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,
