@@ -16,6 +16,7 @@
 
 ### Fixed (not changing behavior/API/variables/...)
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers overwriting the first two elements of variables without ghost zones (`Metadata::None`) with the derefinement and deallocation counters
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Fix `Forest::Make2D` node-neighbor coordinate transforms at nodes of valence >= 6
 - [[PR 1445]](https://github.com/parthenon-hpc-lab/parthenon/pull/1445) Fix ownership for self-bordering blocks

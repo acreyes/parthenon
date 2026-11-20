@@ -21,6 +21,7 @@
 // inside every group on every other permutation, so each group stays on consecutive
 // gids. Every cycle checks bitwise, on every block, that
 //  - the cell variable q still holds the values of its identity (data followed it),
+//  - so does the ghost-less per-block record desc (Metadata::None), all of it,
 //  - the ring lane (ids id-1 and id+1 are neighbors) delivered the right ids, i.e. the
 //    lane was rebuilt for the new gids,
 //  - no group is split across ranks.
@@ -49,6 +50,7 @@ using parthenon::LaneId;
 namespace {
 constexpr LaneId kRing{0};
 constexpr int kGroupSize = 3;
+constexpr int kDescSize = 3;
 
 std::uint64_t SplitMix64(std::uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
@@ -149,6 +151,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   auto pkg = std::make_shared<StateDescriptor>("permute_blocks");
   // The block content that must follow its identity (moved by PermuteBlocks)
   pkg->AddField("q", Metadata({Metadata::Cell, Metadata::Independent}));
+  // A per-block record without ghost zones that must follow its identity too, set only
+  // in the problem generator
+  pkg->AddField("desc", Metadata({Metadata::None, Metadata::Independent},
+                                 std::vector<int>{kDescSize}));
   Metadata mr({Metadata::None, Metadata::Derived, Metadata::OneCopy},
               std::vector<int>{3});
   mr.SetLane(kRing);
@@ -165,6 +171,11 @@ void ProblemGenerator(MeshBlock *pmb, ParameterInput *) {
       PARTHENON_AUTO_LABEL, 0, q.extent_int(0) - 1, 0, q.extent_int(1) - 1, 0,
       q.extent_int(2) - 1, KOKKOS_LAMBDA(const int k, const int j, const int i) {
         q(k, j, i) = Value(id, k, j, i);
+      });
+  auto desc = pmb->meshblock_data.Get()->Get("desc").data;
+  parthenon::par_for(
+      PARTHENON_AUTO_LABEL, 0, kDescSize - 1, KOKKOS_LAMBDA(const int c) {
+        desc(0, 0, 0, 0, 0, 0, c) = Value(id, 0, 0, 1000 + c);
       });
 }
 
@@ -239,6 +250,9 @@ class PermuteBlocksDriver : public EvolutionDriver {
         for (int j = jb.s; j <= jb.e; ++j)
           for (int i = ib.s; i <= ib.e; ++i)
             check(q(0, 0, 0, 0, k, j, i), Value(id, k, j, i), tag + i + 16 * j);
+      auto desc = rc->Get("desc").data.GetHostMirrorAndCopy();
+      for (int c = 0; c < kDescSize; ++c)
+        check(desc(0, 0, 0, 0, 0, 0, c), Value(id, 0, 0, 1000 + c), tag + 1010 + c);
       auto rec = rc->Get("ring_rec").data.GetHostMirrorAndCopy();
       check(rec(0, 0, 0, 0, 0, 0, 1), (id + n - 1) % n, tag + 1000);
       check(rec(0, 0, 0, 0, 0, 0, 2), (id + 1) % n, tag + 1001);
