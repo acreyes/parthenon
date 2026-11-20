@@ -242,11 +242,26 @@ bool TryRecvFineToCoarse(int lid_recv, int send_rank, const LogicalLocation &fin
 }
 
 #ifdef MPI_PARALLEL
-MPI_Request SendSameToSame(int lid_recv, int dest_rank, Variable<Real> *var,
-                           MeshBlock *pmb, Mesh *pmesh) {
-  MPI_Request req;
+void SendSameToSame(int lid_recv, int dest_rank, Variable<Real> *var, MeshBlock *pmb,
+                    Mesh *pmesh, std::vector<MPI_Request> &reqs) {
   MPI_Comm comm = pmesh->GetMPIComm(var->label());
   int tag = CreateAMRMPITag(lid_recv);
+  if (!var->metadata().IsMeshTied()) {
+    // A variable that is not tied to the mesh (Metadata::None) has no ghost zones to
+    // carry the counters, so they go in their own message ahead of the data, with the
+    // allocation status
+    var->com_state[0] = pmb->pmr ? pmb->pmr->DerefinementCount() : 0;
+    var->com_state[1] = var->dealloc_count;
+    var->com_state[2] = var->IsAllocated();
+    PARTHENON_MPI_CHECK(MPI_Isend(var->com_state, 3, MPI_INT, dest_rank, tag, comm,
+                                  &reqs.emplace_back()));
+    if (var->IsAllocated())
+      PARTHENON_MPI_CHECK(MPI_Isend(var->data.data(), var->data.size(),
+                                    MPI_PARTHENON_REAL, dest_rank, tag, comm,
+                                    &reqs.emplace_back()));
+    return;
+  }
+  MPI_Request req;
   if (var->IsAllocated()) {
     // Metadata about this field also needs to be copied from this rank to the
     // receiving rank (namely the dereference count and the dealloc_count). Not
@@ -274,7 +289,7 @@ MPI_Request SendSameToSame(int lid_recv, int dest_rank, Variable<Real> *var,
     PARTHENON_MPI_CHECK(
         MPI_Isend(var->com_state, 2, MPI_INT, dest_rank, tag, comm, &req));
   }
-  return req;
+  reqs.push_back(req);
 }
 
 bool TryRecvSameToSame(int lid_recv, int send_rank, Variable<Real> *var, MeshBlock *pmb,
@@ -284,7 +299,21 @@ bool TryRecvSameToSame(int lid_recv, int send_rank, Variable<Real> *var, MeshBlo
   int test;
   MPI_Status status;
   PARTHENON_MPI_CHECK(MPI_Iprobe(send_rank, tag, comm, &test, &status));
-  if (test) {
+  if (test && !var->metadata().IsMeshTied()) {
+    // counters and allocation status, then the data if allocated (see SendSameToSame)
+    PARTHENON_MPI_CHECK(
+        MPI_Recv(var->com_state, 3, MPI_INT, send_rank, tag, comm, MPI_STATUS_IGNORE));
+    if (pmb->pmr) pmb->pmr->DerefinementCount() = var->com_state[0];
+    if (var->com_state[2]) {
+      if (!pmb->IsAllocated(var->label())) pmb->AllocateSparse(var->label());
+      PARTHENON_MPI_CHECK(MPI_Recv(var->data.data(), var->data.size(), MPI_PARTHENON_REAL,
+                                   send_rank, tag, comm, MPI_STATUS_IGNORE));
+    } else if (pmb->IsAllocated(var->label()) &&
+               !var->metadata().IsSet(Metadata::ForceAllocOnNewBlocks)) {
+      pmb->DeallocateSparse(var->label());
+    }
+    var->dealloc_count = var->com_state[1];
+  } else if (test) {
     int size;
     PARTHENON_MPI_CHECK(MPI_Get_count(&status, MPI_PARTHENON_REAL, &size));
     if (size > 2) {
@@ -789,8 +818,8 @@ void Mesh::RedistributeAndRefineMeshBlocks(ParameterInput *pin, ApplicationInput
       if (nloc.level() == oloc.level() &&
           newrank[nn] != Globals::my_rank) { // same level, different rank
         for (auto &var : pb->vars_cc_)
-          send_reqs.emplace_back(SendSameToSame(nn - nslist[newrank[nn]], newrank[nn],
-                                                var.get(), pb.get(), this));
+          SendSameToSame(nn - nslist[newrank[nn]], newrank[nn], var.get(), pb.get(), this,
+                         send_reqs);
       } else if (nloc.level() > oloc.level()) { // c2f
         // c2f must communicate to multiple leaf blocks (unlike f2c, same2same)
         for (int l = 0; l < nleaf; l++) {
@@ -1113,8 +1142,8 @@ void Mesh::PermuteBlocks(const std::vector<int> &new_gid_of_old, ParameterInput 
     if (newrank[n] == me) continue;
     auto pb = FindMeshBlock(o);
     for (auto &var : pb->vars_cc_)
-      send_reqs.emplace_back(SendSameToSame(n - newnslist[newrank[n]], newrank[n],
-                                            var.get(), pb.get(), this));
+      SendSameToSame(n - newnslist[newrank[n]], newrank[n], var.get(), pb.get(), this,
+                     send_reqs);
   }
 #endif
 

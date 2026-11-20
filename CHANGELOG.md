@@ -20,6 +20,7 @@
 - [[PR 1502]](https://github.com/parthenon-hpc-lab/parthenon/pull/1502) Make Toth & Roe internal prolongation divergence free for non-cubic cells and curvilinear coordinates
 - [[PR 1473]](https://github.com/parthenon-hpc-lab/parthenon/pull/1473) Support coalesced communication with multiple comm lanes (e.g. multigrid with `do_coalesced_comms=true`), fix coalesced communication for partitions that don't communicate with every neighboring rank and for partitions on different grids
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
+- [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers overwriting the first two elements of variables without ghost zones (`Metadata::None`) with the derefinement and deallocation counters
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames
 - [[PR 3]](https://github.com/acreyes/parthenon/pull/3) Fix `Forest::Make2D` node-neighbor coordinate transforms at nodes of valence >= 6
 - [[PR 1445]](https://github.com/parthenon-hpc-lab/parthenon/pull/1445) Fix ownership for self-bordering blocks
