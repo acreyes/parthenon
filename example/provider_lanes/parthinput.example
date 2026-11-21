@@ -43,3 +43,5 @@ nx3 = 1
 ncycles = 4
 # The groups lane is reshuffled and rebuilt (Mesh::RebuildLane) before this cycle
 rebuild_cycle = 2
+# Rebuild the whole groups lane (true) or only what changed (false)
+full_rebuild = false

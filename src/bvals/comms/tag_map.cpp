@@ -56,6 +56,21 @@ void TagMap::AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBl
   }
 }
 
+void TagMap::AddLaneNeighbor(const MeshBlock *pmb, const NeighborBlock &nb,
+                             int comm_lanes_per_pair) {
+  auto &pair_map = map_[nb.rank];
+  for (int comm_lane = 0; comm_lane < comm_lanes_per_pair; ++comm_lane)
+    pair_map[std::make_pair(MakeLaneChannelPair(pmb, nb), comm_lane)] = -1;
+}
+
+void TagMap::RemoveLaneNeighbor(const MeshBlock *pmb, const NeighborBlock &nb,
+                                int comm_lanes_per_pair) {
+  auto it = map_.find(nb.rank);
+  if (it == map_.end()) return;
+  for (int comm_lane = 0; comm_lane < comm_lanes_per_pair; ++comm_lane)
+    it->second.erase(std::make_pair(MakeLaneChannelPair(pmb, nb), comm_lane));
+}
+
 int TagMap::GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb,
                        const int comm_lane) {
   auto &pair_map = map_[nb.rank];
@@ -116,7 +131,10 @@ template void TagMap::AddMeshDataToMap<BoundaryType::gmg_prolongate_recv>(
 template void TagMap::AddMeshDataToMap<BoundaryType::gmg_restrict_recv>(
     std::shared_ptr<MeshData<Real>> &md, int);
 
-void TagMap::ResolveMap() {
+void TagMap::ResolveRankMap_(int rank, rank_pair_map_t &pair_map) {
+  int idx = 0;
+  std::for_each(pair_map.begin(), pair_map.end(),
+                [&idx](auto &pair) { pair.second = idx++; });
 #ifdef MPI_PARALLEL
   int flag;
   void *max_tag; // largest supported MPI tag value
@@ -124,16 +142,20 @@ void TagMap::ResolveMap() {
   if (!flag) {
     PARTHENON_FAIL("MPI error, cannot query largest supported MPI tag value.");
   }
+  if (idx > (*reinterpret_cast<int *>(max_tag)) && rank != Globals::my_rank)
+    PARTHENON_FAIL("Number of tags exceeds the maximum allowed by this MPI version.");
 #endif
-  for (auto it = map_.begin(); it != map_.end(); ++it) {
-    auto &pair_map = it->second;
-    int idx = 0;
-    std::for_each(pair_map.begin(), pair_map.end(),
-                  [&idx](auto &pair) { pair.second = idx++; });
-#ifdef MPI_PARALLEL
-    if (idx > (*reinterpret_cast<int *>(max_tag)) && it->first != Globals::my_rank)
-      PARTHENON_FAIL("Number of tags exceeds the maximum allowed by this MPI version.");
-#endif
+}
+
+void TagMap::ResolveMap() {
+  for (auto &[rank, pair_map] : map_)
+    ResolveRankMap_(rank, pair_map);
+}
+
+void TagMap::ResolveMap(const std::set<int> &ranks) {
+  for (const int rank : ranks) {
+    auto it = map_.find(rank);
+    if (it != map_.end()) ResolveRankMap_(rank, it->second);
   }
 }
 
