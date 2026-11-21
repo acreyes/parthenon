@@ -359,12 +359,19 @@ lane buffers.
   geometric ``BoundaryType`` (as before) and, for lanes, one per
   (``BoundaryType``, send/receive, lane), created when the lane's tasks are
   added; each holds only its lane's boundaries.
-- **Rebuild.** ``Mesh::RebuildLane(lane)`` is rank-local: it reruns the
-  provider for every local block and rebuilds the lane's neighbor lists, tag
-  map and buffers, and bumps the lane's own comm-map epoch: only that lane's
-  sub-caches (in every ``MeshData``) re-initialize at their next exchange.
-  Other lanes and the geometric exchanges keep their buffers and caches.
-  Every rank on either end of a changed
+- **Rebuild.** ``Mesh::RebuildLane(lane)`` is rank-local and incremental: it
+  reruns the provider and the lane's ``BufferSize`` ops for every local block
+  and compares them with what the lane was built with. Only what changed is
+  rebuilt: the neighbor lists of blocks whose list changed, the tag maps of
+  the ranks with an added or removed channel, and the buffers of new channels,
+  of channels whose ``BufferSize`` changed and of every channel to a rank whose
+  tags changed (a rank's tags are its sorted channel keys, so both ends agree).
+  Unchanged buffers are kept. If anything was rebuilt, the lane's own comm-map
+  epoch is bumped: only that lane's sub-caches (in every ``MeshData``)
+  re-initialize at their next exchange; if nothing changed, nothing is done.
+  ``RebuildLane(lane, true)`` rebuilds the lane's neighbor lists, tag map and
+  buffers from scratch. Other lanes and the geometric exchanges keep their
+  buffers and caches. Every rank on either end of a changed
   channel must call it before its next exchange on the lane, and the lane
   must be quiescent (no lane message of a previous exchange in flight, no
   receive posted), i.e. call it between exchanges. Lanes are rebuilt

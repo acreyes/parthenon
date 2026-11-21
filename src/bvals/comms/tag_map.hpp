@@ -20,6 +20,7 @@
 #define BVALS_COMMS_TAG_MAP_HPP_
 
 #include <map>
+#include <set>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -96,6 +97,8 @@ class TagMap {
   rank_pair_t MakeChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
   // The same for a provider-lane channel, from the channel ids at both ends
   rank_pair_t MakeLaneChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
+  // Assigns the tags of the map of one rank in key order
+  void ResolveRankMap_(int rank, rank_pair_map_t &pair_map);
 
  public:
   void clear() { map_.clear(); }
@@ -119,6 +122,15 @@ class TagMap {
   void AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBlock> &nbs,
                         int channels_per_pair = 1);
   int GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb, int id = 0);
+  // Incremental lane rebuild: adds (unresolved) or removes the channels of one lane
+  // neighbor, then re-resolves the maps of the ranks whose channels changed. A rank's
+  // tags depend only on its map's keys, so both ends agree as long as both apply the same
+  // (symmetric) changes.
+  void AddLaneNeighbor(const MeshBlock *pmb, const NeighborBlock &nb,
+                       int channels_per_pair = 1);
+  void RemoveLaneNeighbor(const MeshBlock *pmb, const NeighborBlock &nb,
+                          int channels_per_pair = 1);
+  void ResolveMap(const std::set<int> &ranks);
 };
 } // namespace parthenon
 
