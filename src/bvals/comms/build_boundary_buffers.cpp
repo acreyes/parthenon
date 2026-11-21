@@ -73,10 +73,12 @@ int GetBoundaryTag(Mesh *pmesh, const MeshBlock *pmb, const NeighborBlock &nb,
 }
 
 // Builds the missing buffers of the boundaries of type BTYPE; on provider lanes of lane
-// only_lane if it is non-negative
+// only_lane if it is non-negative, and of the blocks b with (*only_blocks)[b->lid] if
+// only_blocks is given
 template <BoundaryType BTYPE>
 void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
-                               Mesh::comm_buf_map_t &buf_map, int only_lane = -1) {
+                               Mesh::comm_buf_map_t &buf_map, int only_lane = -1,
+                               const std::vector<bool> *only_blocks = nullptr) {
   Mesh *pmesh = md->GetMeshPointer();
   std::unordered_map<std::size_t, std::size_t>
       nbufs; // total (existing and new) number of buffers for
@@ -86,6 +88,7 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
 
   ForEachBoundary<BTYPE>(
       md, only_lane, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
+        if (only_blocks != nullptr && !(*only_blocks)[pmb->lid]) return;
         // Calculate the required size of the buffer for this boundary
         const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
@@ -95,6 +98,7 @@ void BuildBoundaryBufferSubset(std::shared_ptr<MeshData<Real>> &md,
 
   ForEachBoundary<BTYPE>(
       md, only_lane, [&](auto pmb, sp_mbd_t /*rc*/, const nb_t &nb, const sp_cv_t v) {
+        if (only_blocks != nullptr && !(*only_blocks)[pmb->lid]) return;
         // Calculate the required size of the buffer for this boundary
         const int buf_size = BoundaryBufferSize<BTYPE>(pmb, nb, v);
 
@@ -216,15 +220,17 @@ TaskStatus BuildGMGBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md) {
   return TaskStatus::complete;
 }
 
-TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane) {
+TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane,
+                                    const std::vector<bool> *only_blocks) {
   PARTHENON_INSTRUMENT
   Mesh *pmesh = md->GetMeshPointer();
 
-  BuildBoundaryBufferSubset<BoundaryType::lane>(md, pmesh->boundary_comm_map, lane);
+  BuildBoundaryBufferSubset<BoundaryType::lane>(md, pmesh->boundary_comm_map, lane,
+                                                only_blocks);
   BuildBoundaryBufferSubset<BoundaryType::lane_flxcor_send>(md, pmesh->boundary_comm_map,
-                                                            lane);
+                                                            lane, only_blocks);
   BuildBoundaryBufferSubset<BoundaryType::lane_flxcor_recv>(md, pmesh->boundary_comm_map,
-                                                            lane);
+                                                            lane, only_blocks);
 
   return TaskStatus::complete;
 }

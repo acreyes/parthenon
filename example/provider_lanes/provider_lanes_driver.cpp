@@ -63,6 +63,8 @@ class ProviderLanesDriver : public Driver {
         pinput->GetOrAddInteger("provider_lanes", "rebuild_cycle", 2);
     // rebuild = false changes the graph without rebuilding the lane: the check fails
     const bool rebuild = pinput->GetOrAddBoolean("provider_lanes", "rebuild", true);
+    // full_rebuild = true rebuilds the whole groups lane instead of what changed
+    const bool full = pinput->GetOrAddBoolean("provider_lanes", "full_rebuild", false);
     int capacity = provider_lanes::GetCapacity(pmesh);
     for (int cycle = 0; cycle < ncycles; ++cycle) {
       const CacheInits before = CountCacheInits();
@@ -75,7 +77,9 @@ class ProviderLanesDriver : public Driver {
         if (rebuild) {
           capacity += 3;
           provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
-          pmesh->RebuildLane(kGroups);
+          pmesh->RebuildLane(kGroups, full);
+          // The ring lane did not change: its rebuild keeps its buffers and caches
+          pmesh->RebuildLane(kRing);
         }
       }
       provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);

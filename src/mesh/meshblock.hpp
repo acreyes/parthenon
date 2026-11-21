@@ -527,6 +527,9 @@ class MeshBlock : public std::enable_shared_from_this<MeshBlock> {
   std::vector<NeighborBlock> gmg_self_neighbors;
   // Indexed by lane id, set by Mesh::RebuildLane
   std::vector<std::vector<NeighborBlock>> lane_neighbors;
+  // Indexed by lane id: the BufferSize of each (lane neighbor, lane variable) the lane's
+  // buffers were built with (Mesh::RebuildLane compares them to find changed buffers)
+  std::vector<std::vector<int>> lane_buffer_sizes;
 
   bool has_coarser_neighbors_ = false;
 };

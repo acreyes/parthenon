@@ -177,8 +177,10 @@ TaskID AddBoundaryExchangeTasks(
 // These tasks should not be called in down stream code
 TaskStatus BuildBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md);
 TaskStatus BuildGMGBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md);
-// Builds the missing buffers of the lane exchanges of md, of one lane only if lane >= 0
-TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane = -1);
+// Builds the missing buffers of the lane exchanges of md, of one lane only if lane >= 0,
+// and only of the blocks b with (*only_blocks)[b->lid] if only_blocks is given
+TaskStatus BuildLaneBoundaryBuffers(std::shared_ptr<MeshData<Real>> &md, int lane = -1,
+                                    const std::vector<bool> *only_blocks = nullptr);
 // And this one should only be called AFTER the ones above
 TaskStatus RegisterCoalescedComms(std::shared_ptr<MeshData<Real>> &md);
 TaskStatus RegisterCoalescedCommsGMG(std::shared_ptr<MeshData<Real>> &md);
