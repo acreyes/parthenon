@@ -5,6 +5,7 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
+- [[PR 8]](https://github.com/acreyes/parthenon/pull/8) Add `parthenon/mesh/tree_size_ignores_symmetry` (default false): `Forest::HyperRectangular` leaves symmetry directions out of the tree power-of-2 divisor, so 2D and 1D meshes can have few trees
 - [[PR 7]](https://github.com/acreyes/parthenon/pull/7) `Mesh::RebuildLane` rebuilds only the neighbor lists, tag maps and buffers of a lane that changed (`RebuildLane(lane, true)` rebuilds the whole lane)
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Add `Mesh::PermuteBlocks` run at a user cadence (`ApplicationInput::MeshBlockPermutation`, `parthenon/loadbalancing/permute_interval`), load-balance groups (`ApplicationInput::LoadBalanceGroups`) and the `permute_blocks` example
 - [[PR 5]](https://github.com/acreyes/parthenon/pull/5) Add provider lanes (`Mesh::RegisterNeighborProvider`, `Metadata::SetLane`, `AddLaneExchangeTasks`), `Mesh::RebuildLane` and the `provider_lanes` example; per-lane boundary sub-caches in one `MeshData` and per-lane comm-map epochs (`RebuildLane` re-initializes only that lane's caches)
