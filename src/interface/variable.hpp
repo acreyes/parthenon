@@ -154,7 +154,7 @@ class Variable {
 
   int dealloc_count = 0;
 
-  int com_state[2];
+  int com_state[3];
 
   int GetAllocationStatus() {
     if (!is_allocated_) return 0;
