@@ -371,6 +371,16 @@ class Mesh {
     return 1;
   }
 
+  // Pre-PR 1473 names, kept for downstream codes
+  [[deprecated("Use SetNumberOfCommLanes")]] void
+  SetNumberOfCommChannels(BoundaryType bound, std::size_t n_channels) {
+    SetNumberOfCommLanes(bound, n_channels);
+  }
+  [[deprecated("Use GetNumberOfCommLanes")]] std::size_t
+  GetNumberOfCommChannels(BoundaryType bound) const {
+    return GetNumberOfCommLanes(bound);
+  }
+
   template <BoundaryType bound_type>
   void AddToTagMap(std::shared_ptr<MeshData<Real>> &md) {
     LockCommLaneNumbers(bound_type);

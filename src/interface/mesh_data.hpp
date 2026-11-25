@@ -214,6 +214,14 @@ class MeshData {
     return 0;
   }
 
+  // Pre-PR 1473 names, kept for downstream codes
+  [[deprecated("Use SetCommLane")]] void SetBoundBufferId(BoundaryType btype, int id) {
+    SetCommLane(btype, id);
+  }
+  [[deprecated("Use GetCommLane")]] int GetBoundBufferId(BoundaryType btype) const {
+    return GetCommLane(btype);
+  }
+
   std::map<BoundaryType, int> comm_lanes_{};
 
   const auto &StageName() const { return stage_name_; }
