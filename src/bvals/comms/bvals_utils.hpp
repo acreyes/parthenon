@@ -277,10 +277,17 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   StateDescriptor *pkg = (pmesh->resolved_packages).get();
   cache.prores_cache.Initialize(nbound, pkg);
 
-  // Registered boundary ops act on the variable's own buffers, not on flux correction
-  constexpr bool flx_bound =
-      BOUND_TYPE == BoundaryType::flxcor_send || BOUND_TYPE == BoundaryType::flxcor_recv;
-  const bool use_ops = !flx_bound && pkg->NumBoundaryFuncs() > 0;
+  // Registered boundary ops act on the variable's own buffers; flux correction has
+  // combine ops on the receiving side only
+  constexpr bool flx_send = BOUND_TYPE == BoundaryType::flxcor_send;
+  constexpr bool flx_recv = BOUND_TYPE == BoundaryType::flxcor_recv;
+  std::size_t nfuncs = 0;
+  if constexpr (flx_recv) {
+    nfuncs = pkg->NumFluxCorrectionFuncs();
+  } else if constexpr (!flx_send) {
+    nfuncs = pkg->NumBoundaryFuncs();
+  }
+  const bool use_ops = nfuncs > 0;
   std::unordered_map<int, int> block_index;
   for (int b = 0; b < md->NumBlocks(); ++b)
     block_index[md->GetBlockData(b)->GetBlockPointer()->gid] = b;
@@ -303,14 +310,24 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
         bi.offsets = nb.offsets;
 
         if (use_ops) {
-          const auto &funcs = v->GetBoundaryFunctions();
-          // Ops get the same-level boundaries only; coarse-fine boundaries keep the
-          // default copy and the variable's prolongation/restriction ops
-          if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
-              nb.loc.level() == pmb->loc.level()) {
-            op_keys.emplace_back(pkg->BoundaryFuncID(funcs), bi.block, v->label(),
-                                 nb.offsets.GetIdx(), nb.gid, ibound, ibuf);
-            variable_length = variable_length || funcs.variable_length;
+          int id = -1;
+          if constexpr (flx_recv) {
+            // Combine ops get the same-level boundaries only
+            if (v->HasFluxCorrectionOps() && nb.loc.level() == pmb->loc.level())
+              id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
+          } else {
+            const auto &funcs = v->GetBoundaryFunctions();
+            // Ops get the same-level boundaries only; coarse-fine boundaries keep the
+            // default copy and the variable's prolongation/restriction ops
+            if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
+                nb.loc.level() == pmb->loc.level()) {
+              id = pkg->BoundaryFuncID(funcs);
+              variable_length = variable_length || (SENDER && funcs.variable_length);
+            }
+          }
+          if (id >= 0) {
+            op_keys.emplace_back(id, bi.block, v->label(), nb.offsets.GetIdx(), nb.gid,
+                                 ibound, ibuf);
           } else {
             default_bufs.push_back(ibuf);
           }
@@ -326,8 +343,7 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
       });
   Kokkos::deep_copy(cache.bnd_info, cache.bnd_info_h);
   cache.prores_cache.CopyToDevice();
-  BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, pkg->NumBoundaryFuncs(),
-                   nbound);
+  BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, nfuncs, nbound);
   cache.bnd_ops.variable_length = variable_length;
   PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,
                            "Variable-length boundary ops need coalesced comms off");

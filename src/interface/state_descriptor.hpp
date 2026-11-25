@@ -91,6 +91,15 @@ struct BoundaryFunctionMaps {
       funcs_to_ids;
 };
 
+/// The same for the flux-correction combine ops (see
+/// Metadata::RegisterFluxCorrectionOps).
+struct FluxCorrectionFunctionMaps {
+  void Register(const Metadata &m);
+  std::size_t size() const noexcept { return funcs_to_ids.size(); }
+  std::unordered_map<FluxCorrectionFunctions_t, std::size_t, BoundaryFunctionsHasher>
+      funcs_to_ids;
+};
+
 /// The state metadata descriptor class.
 ///
 /// Each State descriptor has a label, associated parameters, and
@@ -377,6 +386,16 @@ class StateDescriptor {
   const auto &BoundaryFncsToIDs() const noexcept {
     return boundaryFuncMaps_.funcs_to_ids;
   }
+  std::size_t
+  FluxCorrectionFuncID(const FluxCorrectionFunctions_t &funcs) const noexcept {
+    return fluxCorrectionFuncMaps_.funcs_to_ids.at(funcs);
+  }
+  std::size_t NumFluxCorrectionFuncs() const noexcept {
+    return fluxCorrectionFuncMaps_.size();
+  }
+  const auto &FluxCorrectionFncsToIDs() const noexcept {
+    return fluxCorrectionFuncMaps_.funcs_to_ids;
+  }
   const auto &RefinementFncsToIDs() const noexcept {
     return refinementFuncMaps_.funcs_to_ids;
   }
@@ -587,6 +606,7 @@ class StateDescriptor {
 
   RefinementFunctionMaps refinementFuncMaps_;
   BoundaryFunctionMaps boundaryFuncMaps_;
+  FluxCorrectionFunctionMaps fluxCorrectionFuncMaps_;
   Dictionary<MeshDataDescriptor> submeshdata_map_;
   std::map<TopologicalType, std::size_t> num_scratch_;
 };

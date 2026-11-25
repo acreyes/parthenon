@@ -153,7 +153,14 @@ BndInfo::BndInfo(MeshBlock *pmb, const NeighborBlock &nb,
   coords = pmb->coords;
 
   auto elements = v->GetTopologicalElements();
-  if (v->IsSet(Metadata::Flux)) elements = GetFluxCorrectionElements(v, nb.offsets);
+  if (v->IsSet(Metadata::Flux)) {
+    // topo_idx holds the sender's elements in the sender's order (that of its buffer),
+    // so a receiver selects them with the offsets in the sender's frame
+    elements = GetFluxCorrectionElements(v, idx_range_type ==
+                                                    IndexRangeType::BoundaryExteriorRecv
+                                                ? nb.lcoord_trans.Transform(nb.offsets)
+                                                : nb.offsets);
+  }
   ntopological_elements = elements.size();
 
   lcoord_trans.ncell = var.GetDim(1);

@@ -17,6 +17,7 @@
 # This file was made in part with generative AI.
 
 # Modules
+import re
 import sys
 import utils.test_case
 
@@ -25,11 +26,13 @@ sys.dont_write_bytecode = True
 
 
 class TestCase(utils.test_case.TestCaseAbs):
-    """Registered boundary ops on a 2D forest with irregular nodes.
+    """Registered boundary and flux-correction ops on a 2D forest with irregular nodes.
 
     Runs the boundary_ops example on 1, 2 and the test's number of ranks (all serial
-    without MPI). Each run checks its ghost zones against the neighbor averages itself;
-    the test then requires the ghost zones of all runs to be bitwise identical.
+    without MPI). Each run checks its ghost zones against the neighbor averages and its
+    shared fluxes against the means over the blocks sharing them itself; the test then
+    requires the ghost zones and the fluxes (by hash) of all runs to be bitwise
+    identical.
     """
 
     def Prepare(self, parameters, step):
@@ -51,10 +54,23 @@ class TestCase(utils.test_case.TestCaseAbs):
             print("Couldn't find h5py and numpy to read the outputs.")
             return False
 
+        hashes = []
         for stdout in parameters.stdouts:
             if b" 0 wrong ghost cells" not in stdout:
                 print("A run reported wrong ghost cells.")
                 return False
+            if b" 0 wrong flux elements" not in stdout:
+                print("A run reported wrong flux elements.")
+                return False
+            # The central nodes of the valence 3, 5 and 6 fans are shared by that many
+            # blocks, and no other node is
+            if b" 3:3 " not in stdout or b" 5:5 6:6," not in stdout:
+                print("A run did not combine the irregular nodes.")
+                return False
+            hashes.append(re.search(rb"hash ([0-9a-f]+)", stdout).group(1))
+        if len(set(hashes)) != 1:
+            print("Fluxes differ between runs: %s" % hashes)
+            return False
 
         data = []
         for step in range(1, 4):
