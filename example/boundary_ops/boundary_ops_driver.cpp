@@ -38,6 +38,8 @@ class BoundaryOpsDriver : public Driver {
   DriverStatus Execute() override {
     boundary_ops::AllocateSparse(pmesh);
     const int ncycles = pinput->GetOrAddInteger("boundary_ops", "ncycles", 3);
+    const bool split_fluxes =
+        pinput->GetOrAddBoolean("boundary_ops", "split_fluxes", false);
     for (int cycle = 0; cycle < ncycles; ++cycle) {
       boundary_ops::SetCycle(pmesh, cycle);
       TaskCollection tc;
@@ -49,7 +51,18 @@ class BoundaryOpsDriver : public Driver {
         auto set = tl.AddTask(TaskID(0), boundary_ops::SetBlockValues, md.get());
         parthenon::AddBoundaryExchangeTasks(set, tl, md, true);
         auto set_flux = tl.AddTask(TaskID(0), boundary_ops::SetFluxes, md.get());
-        parthenon::AddFluxCorrectionTasks(set_flux, tl, md, pmesh->multilevel);
+        if (split_fluxes) {
+          // The face fluxes, then the edge fluxes, in separate containers
+          auto &md_face = pmesh->mesh_data.Add(
+              "face_fluxes", md, std::vector<std::string>{"flux_avg", "flux_avg_sparse_0"});
+          auto &md_edge =
+              pmesh->mesh_data.Add("edge_fluxes", md, std::vector<std::string>{"emf_avg"});
+          auto face = parthenon::AddFluxCorrectionTasks(set_flux, tl, md_face,
+                                                        pmesh->multilevel);
+          parthenon::AddFluxCorrectionTasks(face, tl, md_edge, pmesh->multilevel);
+        } else {
+          parthenon::AddFluxCorrectionTasks(set_flux, tl, md, pmesh->multilevel);
+        }
       }
       tc.Execute();
     }
