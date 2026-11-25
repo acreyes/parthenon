@@ -29,9 +29,12 @@ class TestCase(utils.test_case.TestCaseAbs):
     """Registered boundary and flux-correction ops on a 2D forest with irregular nodes.
 
     Runs the boundary_ops example on 1, 2 and the test's number of ranks (all serial
-    without MPI). Each run checks its ghost zones against the neighbor averages and its
-    shared fluxes against the means over the blocks sharing them itself; the test then
-    requires the ghost zones and the fluxes (by hash) of all runs to be bitwise
+    without MPI), then twice more on the test's number of ranks with coalesced comms
+    (without the variable-length variable, which needs them off): once as before and
+    once with the face fluxes and the edge fluxes corrected in separate containers one
+    after the other. Each run checks its ghost zones against the neighbor averages and
+    its shared fluxes against the means over the blocks sharing them itself; the test
+    then requires the ghost zones and the fluxes (by hash) of all runs to be bitwise
     identical.
     """
 
@@ -40,10 +43,18 @@ class TestCase(utils.test_case.TestCaseAbs):
         if not hasattr(self, "max_ranks"):
             self.max_ranks = parameters.num_ranks
         if parameters.mpi_cmd != "":
-            parameters.num_ranks = [1, 2, self.max_ranks][step - 1]
+            parameters.num_ranks = [1, 2, self.max_ranks, self.max_ranks, self.max_ranks][
+                step - 1
+            ]
         parameters.driver_cmd_line_args = [
             "parthenon/job/problem_id=boundary_ops_%d" % step
         ]
+        if step >= 4:
+            parameters.driver_cmd_line_args += [
+                "parthenon/mesh/do_coalesced_comms=true",
+                "boundary_ops/varlen=false",
+                "boundary_ops/split_fluxes=%s" % ("true" if step == 5 else "false"),
+            ]
         return parameters
 
     def Analyse(self, parameters):
@@ -73,10 +84,10 @@ class TestCase(utils.test_case.TestCaseAbs):
             return False
 
         data = []
-        for step in range(1, 4):
+        for step in range(1, 6):
             with h5py.File("boundary_ops_%d.out0.00000.phdf" % step, "r") as f:
                 data.append(f["ghost_avg"][()])
-        for step in range(1, 3):
+        for step in range(1, 5):
             if not np.array_equal(data[0], data[step]):
                 print("Ghost zones differ between run 1 and run %d" % (step + 1))
                 return False

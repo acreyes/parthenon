@@ -452,6 +452,8 @@ TaskStatus ReceiveBoundBufsImpl(std::shared_ptr<MeshData<Real>> &md, int lane) {
                                       ReceiveKey<sp_cv_t>);
 
   const bool coal_comm = pmesh->do_coalesced_comms;
+  // Unpacks every coalesced message that has arrived, including ones for other
+  // MeshData, so its result does not say whether md's buffers are in. The loop below does.
   if (coal_comm) pmesh->pcoalesced_comms->TryReceiveAny(md.get(), bound_type);
   bool all_received = true;
   std::for_each(std::begin(cache.buf_vec), std::end(cache.buf_vec),

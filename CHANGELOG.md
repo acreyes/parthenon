@@ -18,6 +18,7 @@
 - [[PR 1446]](https://github.com/parthenon-hpc-lab/parthenon/pull/1446) Die on repeatedly receiving SIGINT
 
 ### Fixed (not changing behavior/API/variables/...)
+- [[PR 8]](https://github.com/acreyes/parthenon/pull/8) Fix coalesced comms unpacking a message with the receiving `MeshData`'s variables instead of the ones the sender packed (e.g. face and edge flux corrections in separate containers), and failing on a partition with no boundaries shared with a rank
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers overwriting the first two elements of variables without ghost zones (`Metadata::None`) with the derefinement and deallocation counters
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames
