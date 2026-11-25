@@ -14,6 +14,8 @@
 // This file was made in part with generative AI.
 #include <string>
 
+#include <string>
+
 #include "mesh_data.hpp"
 
 #include "mesh/mesh.hpp"
