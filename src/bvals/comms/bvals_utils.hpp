@@ -375,10 +375,11 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
               id = pkg->FluxCorrectionFuncID(v->GetFluxCorrectionFunctions());
           } else {
             const auto &funcs = v->GetBoundaryFunctions();
-            // Ops get the same-level boundaries only; coarse-fine boundaries keep the
-            // default copy and the variable's prolongation/restriction ops
+            // Ops get the same-level boundaries only (lane neighbors are same-level by
+            // contract); coarse-fine boundaries keep the default copy and the variable's
+            // prolongation/restriction ops
             if (v->HasBoundaryOps() && (SENDER ? funcs.HasPack() : funcs.HasUnpack()) &&
-                nb.loc.level() == pmb->loc.level()) {
+                (on_lane || nb.loc.level() == pmb->loc.level())) {
               id = pkg->BoundaryFuncID(funcs);
               variable_length = variable_length || (SENDER && funcs.variable_length);
             }

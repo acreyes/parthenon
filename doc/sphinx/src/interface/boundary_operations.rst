@@ -278,16 +278,6 @@ it: two at faces and the nodes along edges, and three to six at the central
 nodes of the fans. The example checks every shared element on host, and the
 regression test requires the fluxes of the 1, 2 and 4 rank runs to be bitwise
 identical.
-The ``boundary_ops`` example registers ``AverageSharedFluxes`` for the face
-flux of a cell variable and the edge flux of a face variable. Every block sets
-its fluxes to block-dependent values; after the exchange every shared element
-holds the mean over all blocks sharing it, summed in ascending gid: two at
-faces and the nodes along edges, and three to six at the central nodes of the
-fans. The op runs one team per buffer; the first buffer of a (block, variable)
-group that holds an element collects the local value and the value of every
-buffer of the group holding it, sorts them by gid and writes the mean. The
-example checks every shared element on host, and the regression test
-requires the fluxes of the 1, 2 and 4 rank runs to be bitwise identical.
 
 Provider lanes
 --------------
@@ -346,6 +336,12 @@ lane buffers.
   index set, so the pack ops are required and provide
   ``static std::size_t BufferSize(const MeshBlock &, const NeighborBlock &,
   const Variable<Real> &)``; both ends of a channel must get the same size.
+  ``BufferSize`` is the buffer's capacity: a lane pack op may be
+  variable-length (see `Variable-length payloads`_) and send fewer elements
+  each exchange; to send more than the capacity, return a larger
+  ``BufferSize`` and call ``Mesh::RebuildLane`` (``BufferSize`` is called
+  only when the lane's buffers are built). Flux-correction pack ops always
+  send whole buffers.
   ``BndInfo::channel`` and ``BndInfo::nb_channel`` hold the channel ids on the
   local block and on the neighbor; the buckets are sorted by (``block``,
   variable label, ``channel``, neighbor gid), so the buffers arriving on one
@@ -391,10 +387,12 @@ order. One ``MeshData`` holds both lanes' variables and an ordinary
 ``FillGhost`` variable, and is exchanged lane by lane and with the ghost
 exchange. Per-block records are exchanged with an unpack op that sums the
 buffers of each channel in ascending gid, and a face flux with a combine op
-that replaces each block's candidate by the group mean. Before cycle 2 the
-groups are reshuffled and the lane rebuilt. Every cycle is checked bitwise on
-host against the graph; the results are identical on 1 to 4 ranks, and
-that replaces each block's candidate by the group mean. The library ops
+that replaces each block's candidate by the group mean. A third record on the
+groups lane uses a variable-length pack op: each sender sends a number of rows
+that depends on its gid, channel and the cycle, at most the capacity (a
+package parameter returned by ``BufferSize``, raised together with the
+rebuild below); the unpack op reads the received lengths on device and stores,
+per channel, the sum of the rows and their number. The library ops
 ``boundary_ops::AverageOverlapping`` and ``flux_correction_ops::AverageShared``
 locate elements through the geometric index sets and coordinate transforms of a
 ``BndInfo``, which lane buffers do not have, so the example keeps its own ops. Before cycle 2 the

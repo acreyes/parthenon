@@ -63,14 +63,22 @@ class ProviderLanesDriver : public Driver {
         pinput->GetOrAddInteger("provider_lanes", "rebuild_cycle", 2);
     // rebuild = false changes the graph without rebuilding the lane: the check fails
     const bool rebuild = pinput->GetOrAddBoolean("provider_lanes", "rebuild", true);
+    int capacity = provider_lanes::GetCapacity(pmesh);
     for (int cycle = 0; cycle < ncycles; ++cycle) {
       const CacheInits before = CountCacheInits();
       if (cycle == rebuild_cycle) {
         // Every rank changes the graph the same way and rebuilds the lane between
         // exchanges (no lane message in flight)
         *graph_ = LaneGraph(pmesh->nbtotal, graph_->version + 1);
-        if (rebuild) pmesh->RebuildLane(kGroups);
+        // The rows payload may now need more room: raise the capacity (BufferSize) and
+        // reallocate the lane's buffers with RebuildLane
+        if (rebuild) {
+          capacity += 3;
+          provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
+          pmesh->RebuildLane(kGroups);
+        }
       }
+      provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
       RunCycle(cycle);
       const auto res = provider_lanes::Check(pmesh, *graph_, cycle);
       const CacheInits after = CountCacheInits();
@@ -87,7 +95,8 @@ class ProviderLanesDriver : public Driver {
         for (int s = 2; s <= provider_lanes::kMaxGroup; ++s)
           std::cout << " " << s << ":" << res.group_sizes[s];
         std::cout << ", " << res.nchecked << " values checked, " << res.nwrong
-                  << " wrong, hash " << std::hex << res.hash << std::dec
+                  << " wrong, hash " << std::hex << res.hash << std::dec << ", rows "
+                  << res.rows_sent << " of " << res.rows_capacity << " sent"
                   << "; cache inits groups +" << after.groups - before.groups << " ring +"
                   << after.ring - before.ring << " ghosts +"
                   << after.ghosts - before.ghosts << (cache_errors ? " WRONG" : "")
