@@ -367,6 +367,10 @@ class Mesh {
       for (auto it = m_.begin(); it != m_.end();) {
         it = pred(it->first) ? m_.erase(it) : std::next(it);
       }
+      BumpLaneEpoch(lane);
+    }
+    auto erase(const key_type &k) { return m_.erase(k); }
+    void BumpLaneEpoch(int lane) {
       if (lane >= static_cast<int>(lane_epochs_.size())) lane_epochs_.resize(lane + 1, 0);
       lane_epochs_[lane]++;
     }
@@ -441,15 +445,24 @@ class Mesh {
   bool HasNeighborProvider(LaneId lane) const {
     return lane_providers_.count(static_cast<int>(lane)) > 0;
   }
-  // Rank-local full rebuild of one lane after its provider's graph changed: reruns the
-  // provider for every local block, rebuilds the lane's neighbor lists, tag map and
-  // buffers, and bumps the lane's comm-map epoch so that the lane's sub-caches in every
-  // MeshData re-initialize at their next exchange. Other lanes and the geometric
-  // exchanges keep their buffers and caches. Every rank on either end of a changed
-  // channel must call it before its next exchange on the lane. The lane must be
-  // quiescent: every message of its previous exchanges completed and no receive posted
-  // (i.e. call it between exchanges, not while lane tasks are in flight).
-  void RebuildLane(LaneId lane);
+  // Rank-local rebuild of one lane after its provider's graph or its buffer sizes
+  // changed: reruns the provider for every local block and the lane's BufferSize ops,
+  // and rebuilds only what changed: the neighbor lists of the blocks whose list changed,
+  // the tag maps of the ranks whose channels changed, and the buffers of new channels,
+  // of channels whose size changed and of every channel to a rank whose tags changed.
+  // If anything was rebuilt it bumps the lane's comm-map epoch so that the lane's
+  // sub-caches in every MeshData re-initialize at their next exchange. Other lanes and
+  // the geometric exchanges keep their buffers and caches. With full, the lane's neighbor
+  // lists, tag map and buffers are all rebuilt, as on remeshing. Every rank on either end
+  // of a changed channel must call it before its next exchange on the lane. The lane
+  // must be quiescent: every message of its previous exchanges completed and no receive
+  // posted (i.e. call it between exchanges, not while lane tasks are in flight).
+  // Returns true if anything was rebuilt.
+  bool RebuildLane(LaneId lane, bool full = false);
+  // As RebuildLane(lane), but reruns the provider and the BufferSize ops only for the
+  // local blocks listed in gids; the caller guarantees that the other local blocks'
+  // neighbor lists and buffer sizes did not change.
+  bool RebuildLane(LaneId lane, const std::vector<int> &gids);
   TagMap &GetLaneTagMap(int lane) { return lane_tag_maps_.at(lane); }
 
   bool TryReallocCommBufferPools();
@@ -584,6 +597,16 @@ class Mesh {
   // Provider lanes (see RegisterNeighborProvider)
   void SetLaneNeighbors_(int lane);
   void BuildLaneTagMap_(int lane);
+  // The provider's sorted, checked neighbor list of one block, and one entry as a
+  // NeighborBlock
+  void ListLaneNeighbors_(const MeshBlock &pmb, int lane, std::vector<LaneNeighbor> &lnbs);
+  NeighborBlock MakeLaneNeighbor_(const MeshBlock &pmb, const LaneNeighbor &l);
+  // BufferSize of every (lane neighbor, lane variable) of a block, and of all local
+  // blocks into MeshBlock::lane_buffer_sizes (what the lane's buffers were built with)
+  void LaneBufferSizes_(MeshBlock *pmb, int lane, std::vector<int> &sizes);
+  void RecordLaneBufferSizes_(int lane);
+  bool RebuildLane_(int lane, bool full, const std::vector<int> *gids);
+  int LaneTagChannels_();
   std::map<int, NeighborProvider_t> lane_providers_;
   std::map<int, TagMap> lane_tag_maps_;
   void CommunicateBoundaries(std::string md_name = "base",

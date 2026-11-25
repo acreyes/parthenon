@@ -64,7 +64,8 @@ std::vector<LogicalLocation> Forest::GetMeshBlockListAndResolveGids() {
 }
 
 Forest Forest::HyperRectangular(RegionSize mesh_size, RegionSize block_size,
-                                std::array<BoundaryFlag, BOUNDARY_NFACES> mesh_bcs) {
+                                std::array<BoundaryFlag, BOUNDARY_NFACES> mesh_bcs,
+                                bool tree_size_ignores_symmetry) {
   std::array<bool, 3> periodic{mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::periodic,
                                mesh_bcs[BoundaryFace::inner_x2] == BoundaryFlag::periodic,
                                mesh_bcs[BoundaryFace::inner_x3] ==
@@ -78,7 +79,7 @@ Forest Forest::HyperRectangular(RegionSize mesh_size, RegionSize block_size,
       nblock[dir - 1] = 1;
       // Symmetry directions have just a single zone for
       // both the mesh and for each block
-      max_common_power2_divisor = 1;
+      if (!tree_size_ignores_symmetry) max_common_power2_divisor = 1;
       continue;
     }
     // Add error checking

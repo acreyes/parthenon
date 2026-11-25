@@ -147,10 +147,12 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   mcs.RegisterFluxCorrectionOps<parthenon::flux_correction_ops::AverageShared>();
   pkg->AddSparsePool("flux_avg_sparse", mcs, std::vector<int>{0});
 
-  // Variable-length payloads (see VarlenPack)
-  Metadata mv({Metadata::Cell, Metadata::Independent, Metadata::FillGhost});
-  mv.RegisterBoundaryOps<VarlenUnpack, VarlenPack>();
-  pkg->AddField("varlen", mv);
+  // Variable-length payloads (see VarlenPack), which need coalesced comms off
+  if (pin->GetOrAddBoolean("boundary_ops", "varlen", true)) {
+    Metadata mv({Metadata::Cell, Metadata::Independent, Metadata::FillGhost});
+    mv.RegisterBoundaryOps<VarlenUnpack, VarlenPack>();
+    pkg->AddField("varlen", mv);
+  }
   pkg->AddParam("cycle", 0, Params::Mutability::Mutable);
   return pkg;
 }

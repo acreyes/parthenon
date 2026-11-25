@@ -205,9 +205,11 @@ class Forest {
   }
 
   // Build a logically hyper-rectangular forest that mimics the grid
-  // setups available in Athena++
+  // setups available in Athena++. With tree_size_ignores_symmetry, symmetry
+  // directions do not force one tree per root block.
   static Forest HyperRectangular(RegionSize mesh_size, RegionSize block_size,
-                                 std::array<BoundaryFlag, BOUNDARY_NFACES> mesh_bcs);
+                                 std::array<BoundaryFlag, BOUNDARY_NFACES> mesh_bcs,
+                                 bool tree_size_ignores_symmetry = false);
 
   static Forest Make2D(ForestDefinition &forest_def);
 };

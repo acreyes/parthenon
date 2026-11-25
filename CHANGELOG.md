@@ -5,6 +5,9 @@
 ## Current develop
 
 ### Added (new features/APIs/variables/...)
+- [[PR 8]](https://github.com/acreyes/parthenon/pull/8) `Mesh::RebuildLane(lane, gids)` diffs only the listed local blocks (the caller guarantees the others are unchanged); `RebuildLane` returns whether anything was rebuilt
+- [[PR 8]](https://github.com/acreyes/parthenon/pull/8) Add `parthenon/mesh/tree_size_ignores_symmetry` (default false): `Forest::HyperRectangular` leaves symmetry directions out of the tree power-of-2 divisor, so 2D and 1D meshes can have few trees
+- [[PR 7]](https://github.com/acreyes/parthenon/pull/7) `Mesh::RebuildLane` rebuilds only the neighbor lists, tag maps and buffers of a lane that changed (`RebuildLane(lane, true)` rebuilds the whole lane)
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Add `Mesh::PermuteBlocks` run at a user cadence (`ApplicationInput::MeshBlockPermutation`, `parthenon/loadbalancing/permute_interval`), load-balance groups (`ApplicationInput::LoadBalanceGroups`) and the `permute_blocks` example
 - [[PR 5]](https://github.com/acreyes/parthenon/pull/5) Add provider lanes (`Mesh::RegisterNeighborProvider`, `Metadata::SetLane`, `AddLaneExchangeTasks`), `Mesh::RebuildLane` and the `provider_lanes` example; per-lane boundary sub-caches in one `MeshData` and per-lane comm-map epochs (`RebuildLane` re-initializes only that lane's caches)
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Add registered same-level flux-correction combine ops (`Metadata::RegisterFluxCorrectionOps<Combine>`) and the library op `flux_correction_ops::AverageShared`
@@ -15,6 +18,7 @@
 - [[PR 1446]](https://github.com/parthenon-hpc-lab/parthenon/pull/1446) Die on repeatedly receiving SIGINT
 
 ### Fixed (not changing behavior/API/variables/...)
+- [[PR 8]](https://github.com/acreyes/parthenon/pull/8) Fix coalesced comms unpacking a message with the receiving `MeshData`'s variables instead of the ones the sender packed (e.g. face and edge flux corrections in separate containers), and failing on a partition with no boundaries shared with a rank
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers on meshes without refinement (`MeshBlock::pmr` is null)
 - [[PR 6]](https://github.com/acreyes/parthenon/pull/6) Fix same-level remesh transfers overwriting the first two elements of variables without ghost zones (`Metadata::None`) with the derefinement and deallocation counters
 - [[PR 4]](https://github.com/acreyes/parthenon/pull/4) Fix flux-correction receive elements and buffer layout across trees with rotated frames

@@ -252,7 +252,11 @@ Mesh::Mesh(ParameterInput *pin, ApplicationInput *app_in, Packages_t &packages,
   ndim = (mesh_size.nx(X3DIR) > 1) ? 3 : ((mesh_size.nx(X2DIR) > 1) ? 2 : 1);
 
   // Load balancing flag and parameters
-  forest = forest::Forest::HyperRectangular(mesh_size, base_block_size, mesh_bcs);
+  // Opt-in: trees span the largest power-of-2 block count of the non-symmetry
+  // directions, so a 2D mesh is not one tree per root block.
+  forest = forest::Forest::HyperRectangular(
+      mesh_size, base_block_size, mesh_bcs,
+      pin->GetOrAddBoolean("parthenon/mesh", "tree_size_ignores_symmetry", false));
   root_level = forest.root_level;
   forest.EnrollBndryFncts(app_in, mesh_bc_names, mesh_swarm_bc_names,
                           resolved_packages->UserBoundaryFunctions,
@@ -1345,8 +1349,11 @@ void Mesh::BuildAndRegisterCommBuffers_() {
   // partition here. We shouldn't have to, but I don't know how to fix
   // it without a refactor.
   BuildBoundaryBuffers(mesh_data.Add("base", GetBasePartition()));
-  if (!lane_providers_.empty())
+  if (!lane_providers_.empty()) {
     BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()));
+    for (auto &[lane, provider] : lane_providers_)
+      RecordLaneBufferSizes_(lane);
+  }
   if (do_coalesced_comms) RegisterCoalescedComms(this);
 
   if (multigrid) { // But... multigrid is sufficiently hairy that I'm
