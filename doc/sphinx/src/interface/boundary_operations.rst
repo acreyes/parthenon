@@ -369,7 +369,11 @@ lane buffers.
   Unchanged buffers are kept. If anything was rebuilt, the lane's own comm-map
   epoch is bumped: only that lane's sub-caches (in every ``MeshData``)
   re-initialize at their next exchange; if nothing changed, nothing is done.
-  ``RebuildLane(lane, true)`` rebuilds the lane's neighbor lists, tag map and
+  It returns whether anything was rebuilt. ``RebuildLane(lane, gids)`` does the
+  same but reruns the provider and ``BufferSize`` only for the listed local
+  blocks (by gid); the caller guarantees that no other local block's list or
+  sizes changed (e.g. a debug check: a following ``RebuildLane(lane)`` returns
+  false). ``RebuildLane(lane, true)`` rebuilds the lane's neighbor lists, tag map and
   buffers from scratch. Other lanes and the geometric exchanges keep their
   buffers and caches. Every rank on either end of a changed
   channel must call it before its next exchange on the lane, and the lane
