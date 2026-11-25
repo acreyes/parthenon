@@ -157,7 +157,8 @@ struct FluxCorrectionFunctions_t {
     FluxCorrectionFunctions_t funcs(typeid(CombineOp).name());
     funcs.combine = [](MeshData<Real> *md, const BndInfoArr_t &info,
                        const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
-                       const BndOpIdxHost_t &idx_h, std::size_t nbuffers) {
+                       const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+                       const BndPayload_t &, const BndPayloadHost_t &) {
       CombineOp::Combine(md, info, info_h, idx, idx_h, nbuffers);
     };
     return funcs;
