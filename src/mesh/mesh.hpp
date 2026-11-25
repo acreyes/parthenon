@@ -457,7 +457,12 @@ class Mesh {
   // of a changed channel must call it before its next exchange on the lane. The lane
   // must be quiescent: every message of its previous exchanges completed and no receive
   // posted (i.e. call it between exchanges, not while lane tasks are in flight).
-  void RebuildLane(LaneId lane, bool full = false);
+  // Returns true if anything was rebuilt.
+  bool RebuildLane(LaneId lane, bool full = false);
+  // As RebuildLane(lane), but reruns the provider and the BufferSize ops only for the
+  // local blocks listed in gids; the caller guarantees that the other local blocks'
+  // neighbor lists and buffer sizes did not change.
+  bool RebuildLane(LaneId lane, const std::vector<int> &gids);
   TagMap &GetLaneTagMap(int lane) { return lane_tag_maps_.at(lane); }
 
   bool TryReallocCommBufferPools();
@@ -600,6 +605,7 @@ class Mesh {
   // blocks into MeshBlock::lane_buffer_sizes (what the lane's buffers were built with)
   void LaneBufferSizes_(MeshBlock *pmb, int lane, std::vector<int> &sizes);
   void RecordLaneBufferSizes_(int lane);
+  bool RebuildLane_(int lane, bool full, const std::vector<int> *gids);
   int LaneTagChannels_();
   std::map<int, NeighborProvider_t> lane_providers_;
   std::map<int, TagMap> lane_tag_maps_;

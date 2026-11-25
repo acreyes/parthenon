@@ -147,9 +147,16 @@ void Mesh::RecordLaneBufferSizes_(int lane) {
   }
 }
 
-void Mesh::RebuildLane(LaneId lane_id, bool full) {
+bool Mesh::RebuildLane(LaneId lane, bool full) {
+  return RebuildLane_(static_cast<int>(lane), full, nullptr);
+}
+
+bool Mesh::RebuildLane(LaneId lane, const std::vector<int> &gids) {
+  return RebuildLane_(static_cast<int>(lane), false, &gids);
+}
+
+bool Mesh::RebuildLane_(const int lane, const bool full, const std::vector<int> *gids) {
   PARTHENON_INSTRUMENT
-  const int lane = static_cast<int>(lane_id);
   PARTHENON_REQUIRE_THROWS(lane_providers_.count(lane) > 0,
                            "RebuildLane on lane " + std::to_string(lane) +
                                " without a neighbor provider.");
@@ -181,7 +188,7 @@ void Mesh::RebuildLane(LaneId lane_id, bool full) {
     boundary_comm_map.EraseLane(lane, on_lane);
     BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()), lane);
     RecordLaneBufferSizes_(lane);
-    return;
+    return true;
   }
 
   // Incremental: diff each block's new neighbor list and buffer sizes against the ones
@@ -211,15 +218,36 @@ void Mesh::RebuildLane(LaneId lane_id, bool full) {
     ForEachLaneVariable(pmb, lane, [&](const auto &v) { drop(pmb, nb, v); });
   };
 
+  for (auto &spmb : block_list) {
+    if (static_cast<int>(spmb->lane_neighbors.size()) <= lane)
+      spmb->lane_neighbors.resize(lane + 1);
+    if (static_cast<int>(spmb->lane_buffer_sizes.size()) <= lane)
+      spmb->lane_buffer_sizes.resize(lane + 1);
+  }
+  // The blocks to diff: all local blocks, or the listed ones (local gids are contiguous)
+  std::vector<MeshBlock *> diffed;
+  if (gids == nullptr) {
+    for (auto &spmb : block_list)
+      diffed.push_back(spmb.get());
+  } else if (!block_list.empty()) {
+    const int gid0 = block_list[0]->gid;
+    std::vector<bool> listed(block_list.size(), false);
+    for (const int gid : *gids) {
+      const int lid = gid - gid0;
+      PARTHENON_REQUIRE(lid >= 0 && lid < static_cast<int>(block_list.size()) &&
+                            block_list[lid]->gid == gid,
+                        "RebuildLane: listed gid " + std::to_string(gid) +
+                            " is not a local block.");
+      listed[lid] = true;
+    }
+    for (std::size_t lid = 0; lid < block_list.size(); ++lid)
+      if (listed[lid]) diffed.push_back(block_list[lid].get());
+  }
+
   std::vector<LaneNeighbor> lnbs;
   std::vector<NeighborBlock> row;
   std::vector<int> old_of_new, sizes;
-  for (auto &spmb : block_list) {
-    MeshBlock *pmb = spmb.get();
-    if (static_cast<int>(pmb->lane_neighbors.size()) <= lane)
-      pmb->lane_neighbors.resize(lane + 1);
-    if (static_cast<int>(pmb->lane_buffer_sizes.size()) <= lane)
-      pmb->lane_buffer_sizes.resize(lane + 1);
+  for (MeshBlock *pmb : diffed) {
     auto &old = pmb->lane_neighbors[lane];
     ListLaneNeighbors_(*pmb, lane, lnbs);
 
@@ -313,7 +341,7 @@ void Mesh::RebuildLane(LaneId lane_id, bool full) {
   if (local_touched) tags.ResolveMap(std::set<int>{me});
 
   if (stale.empty() && std::none_of(dirty.begin(), dirty.end(), [](bool d) { return d; }))
-    return;
+    return false;
 
   // The lane is quiescent by contract; wait for the last sends of dropped buffers
   bool can_delete;
@@ -333,6 +361,7 @@ void Mesh::RebuildLane(LaneId lane_id, bool full) {
   // Only this lane's boundary caches re-initialize
   boundary_comm_map.BumpLaneEpoch(lane);
   BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()), lane, &dirty);
+  return true;
 }
 
 } // namespace parthenon
