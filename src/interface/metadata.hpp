@@ -134,6 +134,8 @@
   PARTHENON_INTERNAL_FOR_FLAG(NoPersistentParticleIds)                                   \
   /** Only communicate one layer of ghosts at same-to-same boundaries **/                \
   PARTHENON_INTERNAL_FOR_FLAG(CommunicateOne)                                            \
+  /** exchanged on a provider lane (see Metadata::SetLane), not as ghost zones **/       \
+  PARTHENON_INTERNAL_FOR_FLAG(Lane)                                                      \
   /************************************************/                                     \
   /** Vars specifying coordinates for visualization purposes **/                         \
   /** You can specify a single 3D var **/                                                \
@@ -592,13 +594,25 @@ class Metadata {
   // ops are in bvals/comms/bnd_ops_library.hpp.
   const BoundaryFunctions_t &GetBoundaryFunctions() const { return boundary_funcs_; }
   bool HasBoundaryOps() const { return !boundary_funcs_.label().empty(); }
+  //
+  // On a provider lane (SetLane, called first) both ops are required and PackOp must
+  // also provide
+  //   static std::size_t BufferSize(const MeshBlock &, const NeighborBlock &,
+  //                                 const Variable<Real> &);
+  // since lane buffers have no geometric index set. The bucket order then uses the
+  // channel on the local block in place of the neighbor offset index.
   template <class UnpackOp, class PackOp = boundary_ops::DefaultPack>
   void RegisterBoundaryOps() {
-    PARTHENON_REQUIRE_THROWS(IsSet(FillGhost),
-                             "Variable must be FillGhost to accept custom boundary ops");
+    PARTHENON_REQUIRE_THROWS(IsSet(FillGhost) || IsSet(Lane),
+                             "Variable must be FillGhost or on a lane to accept custom "
+                             "boundary ops");
     boundary_funcs_ = BoundaryFunctions_t::RegisterOps<UnpackOp, PackOp>();
     PARTHENON_REQUIRE_THROWS(boundary_funcs_.HasPack() || boundary_funcs_.HasUnpack(),
                              "At least one of the boundary ops must be non-default");
+    PARTHENON_REQUIRE_THROWS(!IsSet(Lane) || (boundary_funcs_.HasPack() &&
+                                              boundary_funcs_.HasUnpack() &&
+                                              boundary_funcs_.HasBufferSize()),
+                             "Lane variables need Unpack, Pack and Pack::BufferSize");
   }
 
   // Registered flux-correction combine op. CombineOp::Combine (same arguments as a
@@ -615,9 +629,15 @@ class Metadata {
     return flux_correction_funcs_;
   }
   bool HasFluxCorrectionOps() const { return !flux_correction_funcs_.label().empty(); }
-  template <class CombineOp>
+  //
+  // On a provider lane (SetLane, called first) the flux is exchanged between lane
+  // neighbors in BoundaryType::lane_flxcor_send/recv instead, and PackOp (with Pack and
+  // BufferSize as for RegisterBoundaryOps) fills the send buffers.
+  template <class CombineOp, class PackOp = boundary_ops::DefaultPack>
   void RegisterFluxCorrectionOps() {
-    auto funcs = FluxCorrectionFunctions_t::RegisterOps<CombineOp>();
+    auto funcs = FluxCorrectionFunctions_t::RegisterOps<CombineOp, PackOp>();
+    PARTHENON_REQUIRE_THROWS(!IsSet(Lane) || (funcs.HasPack() && funcs.HasBufferSize()),
+                             "Flux combine ops on a lane need Pack and Pack::BufferSize");
     if (IsSet(WithFluxes)) {
       flux_metadata->flux_correction_funcs_ = funcs;
     } else {
@@ -638,6 +658,26 @@ class Metadata {
       flux_metadata->CopyRegisteredOps(*other.flux_metadata);
     }
   }
+
+  // Puts the variable (and its flux, if it has one) on a provider lane: it is exchanged
+  // only in BoundaryType::lane (if it registers boundary ops) and its flux only in
+  // BoundaryType::lane_flxcor_send/recv (if it registers a combine op), between the
+  // neighbors the lane's provider lists. Call before registering the ops. A lane
+  // variable cannot also be FillGhost or Sparse; per-block records (Metadata::None) are
+  // fine.
+  void SetLane(LaneId lane) {
+    PARTHENON_REQUIRE_THROWS(static_cast<int>(lane) >= 0, "Lane ids are non-negative");
+    PARTHENON_REQUIRE_THROWS(!IsSet(FillGhost) && !IsSet(Sparse),
+                             "Lane variables cannot be FillGhost or Sparse");
+    Set(Lane);
+    lane_ = static_cast<int>(lane);
+    if (IsSet(WithFluxes)) {
+      flux_metadata->Set(Lane);
+      flux_metadata->lane_ = lane_;
+    }
+  }
+  // Lane id of a Lane variable, -1 otherwise
+  int GetLane() const { return lane_; }
 
   // Operators
   bool HasSameFlags(const Metadata &b) const;
@@ -682,6 +722,7 @@ class Metadata {
   refinement::RefinementFunctions_t refinement_funcs_;
   BoundaryFunctions_t boundary_funcs_;
   FluxCorrectionFunctions_t flux_correction_funcs_;
+  int lane_ = -1;
   std::vector<bool> bits_;
   std::vector<int> shape_ = {1};
   std::vector<std::string> component_labels_ = {};

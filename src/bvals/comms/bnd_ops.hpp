@@ -33,6 +33,10 @@
 namespace parthenon {
 template <typename T>
 class MeshData;
+template <typename T>
+class Variable;
+class MeshBlock;
+struct NeighborBlock;
 
 namespace boundary_ops {
 // Tags selecting Parthenon's default copy for one side of the exchange.
@@ -83,6 +87,51 @@ PARTHENON_BND_OP_TAKES_PAYLOAD(Unpack)
 } // namespace impl
 } // namespace boundary_ops
 
+// Size (in Reals) of the buffer a pack op fills for one boundary. Required on provider
+// lanes, where buffers have no geometric index set.
+using BufferSizeOp_t = std::function<std::size_t(const MeshBlock &, const NeighborBlock &,
+                                                 const Variable<Real> &)>;
+
+namespace boundary_ops {
+template <class Op, class = void>
+struct HasBufferSize : std::false_type {};
+template <class Op>
+struct HasBufferSize<
+    Op, std::void_t<decltype(Op::BufferSize(std::declval<const MeshBlock &>(),
+                                            std::declval<const NeighborBlock &>(),
+                                            std::declval<const Variable<Real> &>()))>>
+    : std::true_type {};
+
+template <class PackOp>
+BufferSizeOp_t MakeBufferSizeOp() {
+  if constexpr (HasBufferSize<PackOp>::value) {
+    return [](const MeshBlock &pmb, const NeighborBlock &nb, const Variable<Real> &v) {
+      return static_cast<std::size_t>(PackOp::BufferSize(pmb, nb, v));
+    };
+  } else {
+    return BufferSizeOp_t();
+  }
+}
+
+template <class PackOp>
+BoundaryOp_t MakePackOp() {
+  if constexpr (std::is_same_v<PackOp, DefaultPack>) {
+    return BoundaryOp_t();
+  } else {
+    return
+        [](MeshData<Real> *md, const BndInfoArr_t &info, const BndInfoArrHost_t &info_h,
+           const BndOpIdx_t &idx, const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
+           const BndPayload_t &payload, const BndPayloadHost_t &payload_h) {
+          if constexpr (impl::PackTakesPayload<PackOp>::value) {
+            PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers, payload, payload_h);
+          } else {
+            PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers);
+          }
+        };
+  }
+}
+} // namespace boundary_ops
+
 // Type-erased pack/unpack ops of a variable, identified (and hashed) by the typeids of
 // the registered op types, like refinement::RefinementFunctions_t. An empty op means the
 // default copy on that side.
@@ -106,18 +155,8 @@ struct BoundaryFunctions_t {
         }
       };
     }
-    if constexpr (!std::is_same_v<PackOp, boundary_ops::DefaultPack>) {
-      funcs.pack = [](MeshData<Real> *md, const BndInfoArr_t &info,
-                      const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
-                      const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
-                      const BndPayload_t &payload, const BndPayloadHost_t &payload_h) {
-        if constexpr (boundary_ops::impl::PackTakesPayload<PackOp>::value) {
-          PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers, payload, payload_h);
-        } else {
-          PackOp::Pack(md, info, info_h, idx, idx_h, nbuffers);
-        }
-      };
-    }
+    funcs.pack = boundary_ops::MakePackOp<PackOp>();
+    funcs.buffer_size = boundary_ops::MakeBufferSizeOp<PackOp>();
     funcs.variable_length = boundary_ops::impl::PackTakesPayload<PackOp>::value;
     funcs.unpack_reads_payload = boundary_ops::impl::UnpackTakesPayload<UnpackOp>::value;
     static_assert(!boundary_ops::impl::PackTakesPayload<PackOp>::value ||
@@ -129,12 +168,14 @@ struct BoundaryFunctions_t {
   const std::string &label() const { return label_; }
   bool HasPack() const { return static_cast<bool>(pack); }
   bool HasUnpack() const { return static_cast<bool>(unpack); }
+  bool HasBufferSize() const { return static_cast<bool>(buffer_size); }
   bool operator==(const BoundaryFunctions_t &other) const {
     return label() == other.label();
   }
 
   BoundaryOp_t pack;
   BoundaryOp_t unpack;
+  BufferSizeOp_t buffer_size;
   // The pack op reports payload lengths (buffers are sent with that length)
   bool variable_length = false;
   // The unpack op reads the received payload lengths
@@ -152,24 +193,36 @@ struct FluxCorrectionFunctions_t {
   FluxCorrectionFunctions_t() = default;
   explicit FluxCorrectionFunctions_t(const std::string &label) : label_(label) {}
 
-  template <class CombineOp>
+  template <class CombineOp, class PackOp = boundary_ops::DefaultPack>
   static FluxCorrectionFunctions_t RegisterOps() {
-    FluxCorrectionFunctions_t funcs(typeid(CombineOp).name());
+    std::string label = typeid(CombineOp).name();
+    if constexpr (!std::is_same_v<PackOp, boundary_ops::DefaultPack>)
+      label += std::string(" and ") + typeid(PackOp).name();
+    FluxCorrectionFunctions_t funcs(label);
     funcs.combine = [](MeshData<Real> *md, const BndInfoArr_t &info,
                        const BndInfoArrHost_t &info_h, const BndOpIdx_t &idx,
                        const BndOpIdxHost_t &idx_h, std::size_t nbuffers,
                        const BndPayload_t &, const BndPayloadHost_t &) {
       CombineOp::Combine(md, info, info_h, idx, idx_h, nbuffers);
     };
+    funcs.pack = boundary_ops::MakePackOp<PackOp>();
+    funcs.buffer_size = boundary_ops::MakeBufferSizeOp<PackOp>();
+    static_assert(!boundary_ops::impl::PackTakesPayload<PackOp>::value,
+                  "Flux-correction pack ops send whole buffers");
     return funcs;
   }
 
   const std::string &label() const { return label_; }
+  bool HasPack() const { return static_cast<bool>(pack); }
+  bool HasBufferSize() const { return static_cast<bool>(buffer_size); }
   bool operator==(const FluxCorrectionFunctions_t &other) const {
     return label() == other.label();
   }
 
   BoundaryOp_t combine;
+  // Lane flux exchanges only: fills the send buffers (lane_flxcor_send) and sizes them
+  BoundaryOp_t pack;
+  BufferSizeOp_t buffer_size;
 
  private:
   std::string label_;

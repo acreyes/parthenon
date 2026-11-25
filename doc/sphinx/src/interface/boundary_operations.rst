@@ -278,3 +278,126 @@ it: two at faces and the nodes along edges, and three to six at the central
 nodes of the fans. The example checks every shared element on host, and the
 regression test requires the fluxes of the 1, 2 and 4 rank runs to be bitwise
 identical.
+
+Provider lanes
+--------------
+
+A provider lane exchanges variables between blocks that a user-registered
+neighbor provider declares to be neighbors, instead of the blocks' geometric
+neighbors. The motivating case is a pool of blocks on a hyper-rectangular mesh
+whose real connectivity (unstructured, with nodes of any valence, changing in
+time) is known only to the downstream code. Parthenon fills in ranks, builds
+tag maps and buffers, and runs the exchanges and their MPI; the registered
+boundary ops above (pack, unpack) and flux-correction combine ops run on the
+lane buffers.
+
+.. code:: cpp
+
+  constexpr parthenon::LaneId my_lane{0};  // small non-negative ids
+
+  // Package: lane variables, e.g. per-block records
+  Metadata m({Metadata::None, Metadata::Derived}, std::vector<int>{4});
+  m.SetLane(my_lane);                        // before registering ops
+  m.RegisterBoundaryOps<MyUnpack, MyPack>(); // both required on a lane
+  Metadata mq({Metadata::Cell, Metadata::WithFluxes});
+  mq.SetLane(my_lane);
+  mq.RegisterFluxCorrectionOps<MyCombine, MyFluxPack>();
+
+  // After the mesh is built, on every rank
+  pmesh->RegisterNeighborProvider(
+      my_lane, [](const MeshBlock &pmb, std::vector<LaneNeighbor> &nbs) {
+        nbs.push_back({/*gid=*/nb_gid, /*channel_me=*/c, /*channel_nb=*/c_nb});
+      });
+
+  // Task list; md may also hold other lanes' and ordinary variables
+  auto ex = AddLaneExchangeTasks(dep, tl, md, my_lane);
+  auto fx = AddLaneFluxCorrectionTasks(dep, tl, md, my_lane);
+
+  // After the downstream code changed the lane graph, between exchanges
+  pmesh->RebuildLane(my_lane);
+
+- **Provider.** Called for every local block, it lists ``{gid, channel_me,
+  channel_nb}`` per lane neighbor. Channel ids are user labels in
+  ``[0, MaxLaneChannels)`` (e.g. a local face or node index); a block may list
+  the same gid several times with different channels, and several neighbors
+  on the same channel (e.g. all blocks around a node). The graph must be
+  symmetric: if block ``a`` lists ``{b, ca, cb}``, block ``b`` lists
+  ``{a, cb, ca}``. Lane neighbors must be on the same refinement level
+  (as for registered boundary ops, cross-level exchanges are Parthenon's). Parthenon sorts each list by (``channel_me``, gid,
+  ``channel_nb``) and stores it as ``NeighborBlock``\ s
+  (``MeshBlock::GetLaneNeighbors(lane)``) with ``lane_channel`` and
+  ``lane_nb_channel`` set and zero offsets.
+- **Variables.** ``Metadata::SetLane`` sets the ``Metadata::Lane`` flag and
+  the lane id on the variable and its flux. A lane variable cannot be
+  ``FillGhost`` or ``Sparse``. It is exchanged only in
+  ``BoundaryType::lane`` (if it registered boundary ops) and its flux only in
+  ``BoundaryType::lane_flxcor_send/recv`` (if it registered a combine op), one
+  buffer per (block, lane neighbor, variable). Lane buffers have no geometric
+  index set, so the pack ops are required and provide
+  ``static std::size_t BufferSize(const MeshBlock &, const NeighborBlock &,
+  const Variable<Real> &)``; both ends of a channel must get the same size.
+  ``BufferSize`` is the buffer's capacity: a lane pack op may be
+  variable-length (see `Variable-length payloads`_) and send fewer elements
+  each exchange; to send more than the capacity, return a larger
+  ``BufferSize`` and call ``Mesh::RebuildLane`` (``BufferSize`` is called
+  only when the lane's buffers are built). Flux-correction pack ops always
+  send whole buffers.
+  ``BndInfo::channel`` and ``BndInfo::nb_channel`` hold the channel ids on the
+  local block and on the neighbor; the buckets are sorted by (``block``,
+  variable label, ``channel``, neighbor gid), so the buffers arriving on one
+  channel are consecutive and in ascending sender gid.
+- **Tasks.** ``AddLaneExchangeTasks`` adds send, receive and ``SetBounds``
+  (after the send of the same ``MeshData``); ``AddLaneFluxCorrectionTasks``
+  the same for the flux. They exchange only the variables of the given lane;
+  the ``MeshData`` may also hold variables of other lanes and ordinary
+  variables, so one ``MeshData`` can be exchanged lane by lane (and with the
+  geometric exchange). The task functions are ``SendLaneBoundBufs``,
+  ``StartReceiveLaneBoundBufs``, ``ReceiveLaneBoundBufs`` and
+  ``SetLaneBounds``, templated on the lane ``BoundaryType`` and taking the
+  ``LaneId``. Coalesced comms are not supported on lanes.
+- **Caches.** The boundary cache of a ``MeshData`` keeps one sub-cache per
+  geometric ``BoundaryType`` (as before) and, for lanes, one per
+  (``BoundaryType``, send/receive, lane), created when the lane's tasks are
+  added; each holds only its lane's boundaries.
+- **Rebuild.** ``Mesh::RebuildLane(lane)`` is rank-local: it reruns the
+  provider for every local block and rebuilds the lane's neighbor lists, tag
+  map and buffers, and bumps the lane's own comm-map epoch: only that lane's
+  sub-caches (in every ``MeshData``) re-initialize at their next exchange.
+  Other lanes and the geometric exchanges keep their buffers and caches.
+  Every rank on either end of a changed
+  channel must call it before its next exchange on the lane, and the lane
+  must be quiescent (no lane message of a previous exchange in flight, no
+  receive posted), i.e. call it between exchanges. Lanes are rebuilt
+  automatically with the other buffers when the mesh is (load balancing,
+  remeshing), which bumps the global epoch and so re-initializes every cache.
+  ``RegisterNeighborProvider`` called after the mesh was built
+  builds the lane right away.
+- **Cost.** Without a registered provider nothing is built or run for lanes:
+  no lane neighbor lists, tag maps, buffers or tasks. The geometric exchanges
+  gain no branch in their pack and unpack kernels, and the ``BoundaryType``
+  indexed cache array keeps its size (the lane sub-caches live in a map that
+  stays empty).
+
+The ``provider_lanes`` example has a pool of 8 x 8 blocks and two lanes whose
+graphs ignore the block positions: a groups lane, where in each of three
+layers the blocks are shuffled into groups of 2 to 6 (each block is a lane
+neighbor of the other members, on channel ``(layer + gid) % 3``, so the two
+ends of a channel use different ids), and a ring lane over a shuffled block
+order. One ``MeshData`` holds both lanes' variables and an ordinary
+``FillGhost`` variable, and is exchanged lane by lane and with the ghost
+exchange. Per-block records are exchanged with an unpack op that sums the
+buffers of each channel in ascending gid, and a face flux with a combine op
+that replaces each block's candidate by the group mean. A third record on the
+groups lane uses a variable-length pack op: each sender sends a number of rows
+that depends on its gid, channel and the cycle, at most the capacity (a
+package parameter returned by ``BufferSize``, raised together with the
+rebuild below); the unpack op reads the received lengths on device and stores,
+per channel, the sum of the rows and their number. The library ops
+``boundary_ops::AverageOverlapping`` and ``flux_correction_ops::AverageShared``
+locate elements through the geometric index sets and coordinate transforms of a
+``BndInfo``, which lane buffers do not have, so the example keeps its own ops. Before cycle 2 the
+groups are reshuffled and the lane rebuilt; the example counts the cache
+initializations and checks that only the groups lane's caches were
+re-initialized. Every cycle is checked bitwise on host against the graph; the
+results are identical on 1 to 4 ranks, and
+``provider_lanes/rebuild=false`` shows the check failing.

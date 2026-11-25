@@ -14,6 +14,7 @@
 // license in this material to reproduce, prepare derivative works, distribute copies to
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
+// This file was made in part with generative AI.
 
 #ifndef BVALS_COMMS_TAG_MAP_HPP_
 #define BVALS_COMMS_TAG_MAP_HPP_
@@ -21,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "basic_types.hpp"
 
@@ -92,6 +94,8 @@ class TagMap {
   // corresponding to the two blocks geometric elements that coincide. This serves as a
   // unique key defining the two-way communication channel between these elements
   rank_pair_t MakeChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
+  // The same for a provider-lane channel, from the channel ids at both ends
+  rank_pair_t MakeLaneChannelPair(const MeshBlock *pmb, const NeighborBlock &nb);
 
  public:
   void clear() { map_.clear(); }
@@ -109,6 +113,12 @@ class TagMap {
   // After the map has been resolved, get the tag for a particular MeshBlock NeighborBlock
   // pair
   int GetTag(const MeshBlock *pmb, const NeighborBlock &nb, int id = 0);
+
+  // Provider lanes keep one TagMap per lane, filled from the lane neighbors of the local
+  // blocks (Mesh::RebuildLane), then resolved as above
+  void AddLaneNeighbors(const MeshBlock *pmb, const std::vector<NeighborBlock> &nbs,
+                        int channels_per_pair = 1);
+  int GetLaneTag(const MeshBlock *pmb, const NeighborBlock &nb, int id = 0);
 };
 } // namespace parthenon
 

@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -39,6 +40,7 @@
 
 #include "bvals/boundary_conditions.hpp"
 #include "bvals/comms/tag_map.hpp"
+#include "bvals/neighbor_block.hpp"
 #include "config.hpp"
 #include "coordinates/coordinates.hpp"
 #include "defs.hpp"
@@ -330,6 +332,24 @@ class Mesh {
       m_.clear();
       epoch_++;
     }
+    // Provider lanes have their own epoch, bumped by Mesh::RebuildLane; a lane's boundary
+    // caches re-initialize when either epoch changes
+    std::size_t GetLaneEpoch(int lane) const {
+      return lane < static_cast<int>(lane_epochs_.size()) ? lane_epochs_[lane] : 0;
+    }
+    // Removes the buffers of one lane (those whose key satisfies pred) and bumps that
+    // lane's epoch only; other buffers and the boundary caches pointing to them are kept
+    template <class Pred>
+    void EraseLane(int lane, Pred &&pred) {
+      for (auto it = m_.begin(); it != m_.end();) {
+        it = pred(it->first) ? m_.erase(it) : std::next(it);
+      }
+      if (lane >= static_cast<int>(lane_epochs_.size())) lane_epochs_.resize(lane + 1, 0);
+      lane_epochs_[lane]++;
+    }
+
+   private:
+    std::vector<std::size_t> lane_epochs_;
   };
 
   ObjectPoolMap<BufArray1D<Real>> pool_map;
@@ -382,6 +402,32 @@ class Mesh {
   }
 
   std::shared_ptr<CoalescedComms> pcoalesced_comms;
+
+  // Provider lanes. A lane is an exchange of the Metadata::Lane variables of one LaneId
+  // (Metadata::SetLane) between the neighbors that a user provider lists for each local
+  // block, instead of the geometric neighbors. Parthenon fills in the neighbors' ranks,
+  // builds the lane's tag map and buffers and runs the exchange
+  // (AddLaneExchangeTasks, AddLaneFluxCorrectionTasks). Nothing is built for a lane
+  // without a provider. Coalesced comms are not supported on lanes.
+  //
+  // Registers (or replaces) the provider of a lane. On every rank, collectively in the
+  // sense that both ends of each channel must register. If the boundary buffers already
+  // exist the lane is built immediately (RebuildLane); afterwards it is rebuilt with the
+  // other buffers whenever the mesh is (initialization, load balancing, remeshing).
+  void RegisterNeighborProvider(LaneId lane, NeighborProvider_t provider);
+  bool HasNeighborProvider(LaneId lane) const {
+    return lane_providers_.count(static_cast<int>(lane)) > 0;
+  }
+  // Rank-local full rebuild of one lane after its provider's graph changed: reruns the
+  // provider for every local block, rebuilds the lane's neighbor lists, tag map and
+  // buffers, and bumps the lane's comm-map epoch so that the lane's sub-caches in every
+  // MeshData re-initialize at their next exchange. Other lanes and the geometric
+  // exchanges keep their buffers and caches. Every rank on either end of a changed
+  // channel must call it before its next exchange on the lane. The lane must be
+  // quiescent: every message of its previous exchanges completed and no receive posted
+  // (i.e. call it between exchanges, not while lane tasks are in flight).
+  void RebuildLane(LaneId lane);
+  TagMap &GetLaneTagMap(int lane) { return lane_tag_maps_.at(lane); }
 
   bool TryReallocCommBufferPools();
 
@@ -510,6 +556,11 @@ class Mesh {
 
   void SetupMPIComms();
   void BuildTagMapAndBoundaryBuffers();
+  // Provider lanes (see RegisterNeighborProvider)
+  void SetLaneNeighbors_(int lane);
+  void BuildLaneTagMap_(int lane);
+  std::map<int, NeighborProvider_t> lane_providers_;
+  std::map<int, TagMap> lane_tag_maps_;
   void CommunicateBoundaries(std::string md_name = "base",
                              const std::vector<std::string> &fields = {});
   void PreCommFillDerived();

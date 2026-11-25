@@ -44,7 +44,9 @@
 namespace parthenon {
 
 bool BvarsSubCache_t::RequiresReinitialize(Mesh *pmesh) const {
-  return buf_vec.size() == 0 || epoch != pmesh->boundary_comm_map.GetCurrentEpoch();
+  const auto &comm_map = pmesh->boundary_comm_map;
+  return buf_vec.size() == 0 || epoch != comm_map.GetCurrentEpoch() ||
+         (lane >= 0 && lane_epoch != comm_map.GetLaneEpoch(lane));
 }
 
 void ProResCache_t::Initialize(int n_regions, StateDescriptor *pkg) {
@@ -205,6 +207,50 @@ BndInfo BndInfo::GetSetBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
            pmb->gid, Globals::my_rank, v->label().c_str(), static_cast<int>(buf_state));
     PARTHENON_FAIL("Buffer should be in a received state.");
   }
+  return out;
+}
+
+int GetLaneBufferSize(const MeshBlock *const pmb, const NeighborBlock &nb,
+                      std::shared_ptr<Variable<Real>> v, bool flux) {
+  const auto &size_op = flux ? v->GetFluxCorrectionFunctions().buffer_size
+                             : v->GetBoundaryFunctions().buffer_size;
+  PARTHENON_REQUIRE(static_cast<bool>(size_op),
+                    "Lane variable " + v->label() + " has no BufferSize op.");
+  return static_cast<int>(size_op(*pmb, nb, *v));
+}
+
+namespace {
+BndInfo LaneBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
+                    std::shared_ptr<Variable<Real>> v,
+                    CommBuffer<buf_pool_t<Real>::owner_t> *combuf) {
+  BndInfo out;
+  out.allocated = v->IsAllocated();
+  out.alloc_status = v->GetAllocationStatus();
+  if (combuf != nullptr) out.buf = combuf->buffer();
+  out.var = v->data.Get();
+  out.coords = pmb->coords;
+  out.ntopological_elements = 0;
+  out.channel = nb.lane_channel;
+  out.nb_channel = nb.lane_nb_channel;
+  return out;
+}
+} // namespace
+
+BndInfo BndInfo::GetLaneSendBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
+                                    std::shared_ptr<Variable<Real>> v,
+                                    CommBuffer<buf_pool_t<Real>::owner_t> *buf) {
+  return LaneBndInfo(pmb, nb, v, buf);
+}
+
+BndInfo BndInfo::GetLaneSetBndInfo(MeshBlock *pmb, const NeighborBlock &nb,
+                                   std::shared_ptr<Variable<Real>> v,
+                                   CommBuffer<buf_pool_t<Real>::owner_t> *buf) {
+  BndInfo out = LaneBndInfo(pmb, nb, v, buf);
+  const auto buf_state = buf != nullptr ? buf->GetState() : BufferState::received;
+  PARTHENON_REQUIRE(buf_state == BufferState::received ||
+                        buf_state == BufferState::received_null,
+                    "Lane buffer should be in a received state.");
+  out.buf_allocated = buf_state == BufferState::received;
   return out;
 }
 
