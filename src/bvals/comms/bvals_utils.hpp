@@ -188,6 +188,13 @@ inline BvarsSubCache_t &GetBvarsSubCache(MeshData<Real> *md, [[maybe_unused]] in
   }
 }
 
+// Provider lanes: a cache is current while its epochs are unchanged if, at its last full
+// check, every variable was dense and every buffer active. Dense lane buffers are only
+// freed or replaced by a lane rebuild, which bumps the lane epoch.
+inline bool LaneCacheCurrent(const BvarsSubCache_t &cache, Mesh *pmesh) {
+  return cache.lane_current && !cache.RequiresReinitialize(pmesh);
+}
+
 template <BoundaryType BOUND_TYPE, bool SENDER>
 inline auto CheckSendBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md,
                                            int lane = -1) {
@@ -198,6 +205,16 @@ inline auto CheckSendBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md,
   bool rebuild = false;
   bool other_communication_unfinished = false;
   int nbound = 0;
+  if constexpr (IsLaneBoundary(BOUND_TYPE)) {
+    if (LaneCacheCurrent(cache, md->GetMeshPointer())) {
+      for (const std::size_t ibuf : cache.lane_write_check)
+        if (!cache.buf_vec[ibuf]->IsAvailableForWrite())
+          other_communication_unfinished = true;
+      return std::make_tuple(false, static_cast<int>(cache.buf_vec.size()),
+                             other_communication_unfinished);
+    }
+  }
+  [[maybe_unused]] bool dense_active = true;
   ForEachBoundary<BOUND_TYPE>(
       md, cache.lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
         const std::size_t ibuf = cache.idx_vec[nbound];
@@ -219,8 +236,22 @@ inline auto CheckSendBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md,
         } else {
           rebuild = true;
         }
+        if constexpr (IsLaneBoundary(BOUND_TYPE))
+          dense_active = dense_active && !v->IsSparse() && buf.IsActive();
         ++nbound;
       });
+  if constexpr (IsLaneBoundary(BOUND_TYPE)) {
+    ++cache.full_checks;
+    // Under coalescing only same-rank buffers can be unavailable for write
+    if (!rebuild && dense_active && nbound == static_cast<int>(cache.buf_vec.size())) {
+      const bool coalesced = md->GetMeshPointer()->do_coalesced_comms;
+      cache.lane_write_check.clear();
+      for (std::size_t ibuf = 0; ibuf < cache.buf_vec.size(); ++ibuf)
+        if (!coalesced || cache.buf_vec[ibuf]->GetCommType() == BuffCommType::both)
+          cache.lane_write_check.push_back(ibuf);
+      cache.lane_current = true;
+    }
+  }
   return std::make_tuple(rebuild, nbound, other_communication_unfinished);
 }
 
@@ -233,6 +264,12 @@ inline auto CheckReceiveBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md
 
   bool rebuild = false;
   int nbound = 0;
+  // Received lane buffers that are active are never received_null (SetNullReceivedEmpty)
+  if constexpr (IsLaneBoundary(BOUND_TYPE)) {
+    if (LaneCacheCurrent(cache, md->GetMeshPointer()))
+      return std::make_tuple(false, static_cast<int>(cache.buf_vec.size()));
+  }
+  [[maybe_unused]] bool dense_active = true;
 
   ForEachBoundary<BOUND_TYPE>(
       md, cache.lane, [&](auto pmb, sp_mbd_t rc, const nb_t &nb, const sp_cv_t v) {
@@ -253,11 +290,19 @@ inline auto CheckReceiveBufferCacheForRebuild(std::shared_ptr<MeshData<Real>> md
               cache.bnd_info_h(ibuf).buf_allocated) {
             rebuild = true;
           }
+          if constexpr (IsLaneBoundary(BOUND_TYPE))
+            dense_active = dense_active && !v->IsSparse() && buf.IsActive() &&
+                           cache.bnd_info_h(ibuf).buf_allocated;
         } else {
           rebuild = true;
         }
         ++nbound;
       });
+  if constexpr (IsLaneBoundary(BOUND_TYPE)) {
+    ++cache.full_checks;
+    if (!rebuild && dense_active && nbound == static_cast<int>(cache.buf_vec.size()))
+      cache.lane_current = true;
+  }
   return std::make_tuple(rebuild, nbound);
 }
 

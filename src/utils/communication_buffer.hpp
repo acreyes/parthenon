@@ -130,6 +130,8 @@ class CommBuffer {
 
   bool IsActive() const { return active_; }
 
+  BuffCommType GetCommType() const { return *comm_type_; }
+
   BufferState GetState() { return *state_; }
 
   // True once the receive has been posted (for sparse receivers, once the message

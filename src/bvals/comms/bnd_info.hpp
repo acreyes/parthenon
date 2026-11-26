@@ -249,6 +249,8 @@ struct BvarsSubCache_t {
     bnd_info_h = BndInfoArr_t::host_mirror_type{};
     prores_cache.clear();
     bnd_ops.clear();
+    lane_current = false;
+    lane_write_check.clear();
   }
 
   bool RequiresReinitialize(Mesh *pmesh) const;
@@ -276,6 +278,13 @@ struct BvarsSubCache_t {
   std::size_t lane_epoch{0};
   // Number of times InitializeBufferCache ran on this sub-cache
   std::size_t initializations{0};
+  // Provider lanes: a full check found the cache current with dense variables and active
+  // buffers, so it stays current until the cache re-initializes (epoch change)
+  bool lane_current{false};
+  // Indices into buf_vec whose availability the send check still tests while current
+  std::vector<std::size_t> lane_write_check;
+  // Provider lanes: number of full (per-boundary) rebuild checks on this sub-cache
+  std::size_t full_checks{0};
 };
 
 struct BvarsCache_t {

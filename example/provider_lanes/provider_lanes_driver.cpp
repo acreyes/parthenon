@@ -36,6 +36,8 @@ namespace {
 // MeshData partitions and ranks
 struct CacheInits {
   std::int64_t groups = 0, ring = 0, ghosts = 0, partitions = 0;
+  // Full rebuild checks of the ring lane's caches (none while their epoch is unchanged)
+  std::int64_t ring_checks = 0;
 };
 
 // Runs ncycles lane exchanges, checking all of them, and reshuffles the groups lane
@@ -137,8 +139,11 @@ class ProviderLanesDriver : public Driver {
       const bool groups_ok = bumped || idling
                                  ? dgroups > 0 && dgroups <= 4 * after.partitions
                                  : dgroups == expected_groups;
-      const int cache_errors = cycle > 0 && (!groups_ok || after.ring != before.ring ||
-                                             after.ghosts != before.ghosts);
+      // The ring caches are checked in full on cycles 0 and 1 only (then current)
+      const bool ring_checked = after.ring_checks != before.ring_checks;
+      const int cache_errors = (cycle > 0 && (!groups_ok || after.ring != before.ring ||
+                                              after.ghosts != before.ghosts)) ||
+                               (cycle > 1 && ring_checked);
       // With coalesced comms only a rebuild that changed the groups lane sends lane
       // infos, and only the groups lane's
       const auto infos_after = CountLaneInfos();
@@ -159,7 +164,9 @@ class ProviderLanesDriver : public Driver {
                   << res.rows_sent << " of " << res.rows_capacity << " sent"
                   << "; cache inits groups +" << after.groups - before.groups << " ring +"
                   << after.ring - before.ring << " ghosts +"
-                  << after.ghosts - before.ghosts << (cache_errors ? " WRONG" : "");
+                  << after.ghosts - before.ghosts << " ring checks +"
+                  << after.ring_checks - before.ring_checks
+                  << (cache_errors ? " WRONG" : "");
         if (coalesced)
           std::cout << "; lane infos groups +" << infos_groups << " ring +" << infos_ring
                     << (info_errors ? " WRONG" : "");
@@ -248,11 +255,13 @@ class ProviderLanesDriver : public Driver {
                                          send, groups)
                         .initializations;
         n.ring += cache.GetLaneSubCache(BoundaryType::lane, send, ring).initializations;
+        n.ring_checks +=
+            cache.GetLaneSubCache(BoundaryType::lane, send, ring).full_checks;
         n.ghosts += cache.GetSubCache(BoundaryType::any, send).initializations;
       }
     }
 #ifdef MPI_PARALLEL
-    MPI_Allreduce(MPI_IN_PLACE, &n, 4, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &n, 5, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 #endif
     return n;
   }
