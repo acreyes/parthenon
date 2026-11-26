@@ -157,15 +157,18 @@ struct CoalescedBuffersRank {
   bool sender{true};
 
   // Provider lanes have no info handshake: the sender sends a lane info message (the
-  // epoch, then the partitions as in ResolveAndSendBufInfo) whenever its buffers to
-  // other_rank change, and its status messages carry that epoch. The receiver applies
-  // the info whose epoch a status message names, so it never waits in a rebuild.
-  // Sender: epoch of the last info sent. Receiver: epoch of the info the current
+  // epoch, then the partitions as in ResolveAndSendBufInfo) with the first exchange
+  // after its buffers to other_rank change, and its status messages carry that epoch.
+  // The receiver applies the info whose epoch a status message names, so it never waits
+  // in a rebuild, and receives the info in the exchange it was sent in.
+  // Sender: epoch of the last info queued. Receiver: epoch of the info the current
   // layout comes from (-1 for none), and whether that layout lists exactly the receive
   // buffers of this rank (expected_keys).
   int info_epoch{-1};
   bool info_valid{false};
   std::map<int, std::vector<int>> pending_infos;
+  // Sender: the lane info (with its epoch) still to be sent with the next exchange
+  std::vector<int> unsent_info;
   std::vector<Mesh::channel_key_t> expected_keys;
   mpi_comm_t info_comm;
   int info_tag{0};
@@ -214,9 +217,9 @@ struct CoalescedComms {
   mpi_comm_t lane_info_comm;
   // Last lane info epoch sent per key; kept across clear() so that epochs only grow
   std::map<rank_key_t, int> lane_info_epochs;
-  // Lane info sends in flight; their receivers read them lazily
+  // Lane info sends in flight
   std::list<std::pair<std::vector<int>, mpi_request_t>> lane_infos_in_flight;
-  // Lane info messages sent by this rank, per provider lane
+  // Lane info messages queued by this rank, per provider lane
   std::map<int, std::int64_t> lane_infos_sent;
 
   Mesh *pmesh;
@@ -238,10 +241,14 @@ struct CoalescedComms {
                      int lane);
 
   // Brings the coalesced buffers of provider lane provider_lane in line with its
-  // current buffers (after the lane is built or rebuilt), and sends a lane info message
-  // to each rank whose buffers changed. Never blocks on other ranks.
+  // current buffers (after the lane is built or rebuilt), and queues a lane info message
+  // for each rank whose buffers changed. Never blocks on other ranks.
   void SyncProviderLane(int provider_lane);
-  void SendLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> info);
+  // Queues the lane info of cbr's new layout; PostLaneInfo sends it with the next
+  // exchange. A send left unreceived across collectives can stall the completion of
+  // later sends (libfabric shm over CMA), so a lane info is only sent with its data.
+  void QueueLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> info);
+  void PostLaneInfo(CoalescedBuffersRank *cbr);
   int LaneInfoTag(BoundaryType b_type, int lane, int provider_lane) const;
 
   void ResolveAndSendSendBuffers();

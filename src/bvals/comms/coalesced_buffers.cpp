@@ -44,21 +44,42 @@
 namespace parthenon {
 
 namespace {
+// Checks that the tags up to tag + 1 are valid MPI tags (MPI_TAG_UB is only guaranteed
+// to be at least 32767)
+int CheckedTag(std::int64_t tag) {
+  int tag_ub = 32767;
+#ifdef MPI_PARALLEL
+  static const int ub = [] {
+    void *v;
+    int flag;
+    PARTHENON_MPI_CHECK(MPI_Comm_get_attr(MPI_COMM_WORLD, MPI_TAG_UB, &v, &flag));
+    return flag ? *static_cast<int *>(v) : 32767;
+  }();
+  tag_ub = ub;
+#endif
+  PARTHENON_REQUIRE(tag >= 0 && tag + 1 <= tag_ub,
+                    "Coalesced comms MPI tag " + std::to_string(tag) +
+                        " exceeds MPI_TAG_UB = " + std::to_string(tag_ub) + ".");
+  return static_cast<int>(tag);
+}
+
 // All comm lanes of a sender BoundaryType share a communicator, so combine the partition
 // tag and the lane (and on provider lanes the provider lane) into a unique MPI tag for
 // the data message (the sparse status message uses this tag + 1)
 int CoalescedDataTag(Mesh *pmesh, BoundaryType b_type, int partition_tag, int lane,
                      int provider_lane) {
-  const int nlanes = pmesh->GetNumberOfCommLanes(GetAssociatedSender(b_type));
-  if (provider_lane < 0) return 2 * (nlanes * partition_tag + lane);
-  return 2 *
-         ((nlanes * partition_tag + lane) * kMaxCoalescedProviderLanes + provider_lane);
+  const std::int64_t nlanes = pmesh->GetNumberOfCommLanes(GetAssociatedSender(b_type));
+  if (provider_lane < 0) return CheckedTag(2 * (nlanes * partition_tag + lane));
+  return CheckedTag(
+      2 * ((nlanes * partition_tag + lane) * kMaxCoalescedProviderLanes + provider_lane));
 }
 
 // Tag of the lane info messages of one (sender type, comm lane, provider lane)
 int LaneInfoTagOf(BoundaryType b_type, int lane, int provider_lane) {
   const bool flux = GetAssociatedSender(b_type) == BoundaryType::lane_flxcor_send;
-  return 2 * (lane * kMaxCoalescedProviderLanes + provider_lane) + (flux ? 1 : 0);
+  return CheckedTag(2 * (static_cast<std::int64_t>(lane) * kMaxCoalescedProviderLanes +
+                         provider_lane) +
+                    (flux ? 1 : 0));
 }
 
 // The entries of a CoalescedComms map with one (BoundaryType, comm lane, provider lane)
@@ -583,8 +604,9 @@ void CoalescedBuffersRank::PackAndSend(MeshData<Real> *pmd) {
   // A registered partition may have no boundaries shared with other_rank, in which case
   // there is nothing to send
   const int partition_tag = pmesh->pcoalesced_comms->GetPartitionTag(pmd);
-  if (coalesced_bufs.count(partition_tag))
-    coalesced_bufs.at(partition_tag).PackAndSend(pmd->GetUids(), info_epoch);
+  if (coalesced_bufs.count(partition_tag) == 0) return;
+  if (!unsent_info.empty()) pmesh->pcoalesced_comms->PostLaneInfo(this);
+  coalesced_bufs.at(partition_tag).PackAndSend(pmd->GetUids(), info_epoch);
 }
 
 //----------------------------------------------------------------------------------------
@@ -878,13 +900,22 @@ int CoalescedComms::LaneInfoTag(BoundaryType b_type, int lane, int provider_lane
 }
 
 //----------------------------------------------------------------------------------------
-void CoalescedComms::SendLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> info) {
+void CoalescedComms::QueueLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> info) {
   const rank_key_t key{cbr->b_type, cbr->lane, cbr->provider_lane, cbr->other_rank};
   auto eit = lane_info_epochs.find(key);
   const int epoch = eit == lane_info_epochs.end() ? 0 : eit->second + 1;
   lane_info_epochs[key] = epoch;
   cbr->info_epoch = epoch;
   info.insert(info.begin(), epoch);
+  // A layout replaced before it was exchanged is never sent
+  cbr->unsent_info = std::move(info);
+  lane_infos_sent[cbr->provider_lane]++;
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedComms::PostLaneInfo(CoalescedBuffersRank *cbr) {
+  std::vector<int> info = std::move(cbr->unsent_info);
+  cbr->unsent_info.clear();
 #ifdef MPI_PARALLEL
   for (auto it = lane_infos_in_flight.begin(); it != lane_infos_in_flight.end();) {
     int flag;
@@ -896,7 +927,6 @@ void CoalescedComms::SendLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> in
   PARTHENON_MPI_CHECK(MPI_Isend(buf.data(), buf.size(), MPI_INT, cbr->other_rank,
                                 cbr->info_tag, lane_info_comm, &req));
 #endif
-  lane_infos_sent[cbr->provider_lane]++;
 }
 
 //----------------------------------------------------------------------------------------
@@ -961,7 +991,7 @@ void CoalescedComms::SyncProviderLane(int provider_lane) {
         auto info = cbr.SerializeLaneInfo();
         const auto old = old_info.find(it->first);
         if (old == old_info.end() || old->second != info)
-          SendLaneInfo(&cbr, std::move(info));
+          QueueLaneInfo(&cbr, std::move(info));
         cbr.buffers_built = true;
         ++it;
       }
