@@ -99,10 +99,14 @@ struct SumByChannel {
 // Variable-length payloads on the groups lane: each sender sends RowsLength rows (at most
 // the capacity, a package param that BufferSize reads and the driver raises before
 // RebuildLane); the unpack op sums, per receiving channel, the rows and their number.
+// With rows_min = 0 some payloads are empty; with rows_vary the capacity of a pair of
+// blocks a, b is capacity + (a + b) % 3. The pair (bump_a, bump_b) has bump more.
 KOKKOS_INLINE_FUNCTION int RowsLength(int send_gid, int send_channel, int cycle,
-                                      int capacity) {
-  return 1 + (5 * send_gid + 3 * send_channel + 2 * cycle) % capacity;
+                                      int capacity, int rows_min) {
+  return rows_min +
+         (5 * send_gid + 3 * send_channel + 2 * cycle) % (capacity + 1 - rows_min);
 }
+int RowsCapacity(const StateDescriptor *pkg, int gid_a, int gid_b);
 KOKKOS_INLINE_FUNCTION Real RowValue(int send_gid, int row, int cycle) {
   return 1.0 / (send_gid + 2.0 + 0.1 * row + 0.37 * cycle);
 }
@@ -151,6 +155,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
 // candidates and u
 TaskStatus SetValues(MeshData<Real> *md, int cycle);
 void SetCycleAndCapacity(Mesh *pmesh, int cycle, int capacity);
+// Gives the pair of blocks (a, b) bump more rows capacity
+void SetBump(Mesh *pmesh, int a, int b, int bump);
 int GetCapacity(Mesh *pmesh);
 
 struct CheckResult {

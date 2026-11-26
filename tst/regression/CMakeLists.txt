@@ -108,13 +108,21 @@ if (ENABLE_HDF5)
   --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/boundary_exchange/parthinput.boundary_exchange")
   list(APPEND EXTRA_TEST_LABELS "")
 
-  # Registered boundary ops on a forest with irregular nodes, 1/2/N ranks, then N ranks
-  # with coalesced comms
+  # Registered boundary ops on a forest with irregular nodes, 1/2/N ranks, then N, 2 and 3
+  # ranks with coalesced comms
   list(APPEND TEST_DIRS boundary_ops)
   list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
   list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/boundary_ops/boundary-ops-example \
   --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/boundary_ops/parthinput.boundary_ops \
-  --num_steps 5")
+  --num_steps 7")
+  list(APPEND EXTRA_TEST_LABELS "")
+
+  # Provider lanes with and without coalesced comms, 1 to N ranks
+  list(APPEND TEST_DIRS provider_lanes)
+  list(APPEND TEST_PROCS ${NUM_MPI_PROC_TESTING})
+  list(APPEND TEST_ARGS "--driver ${PROJECT_BINARY_DIR}/example/provider_lanes/provider-lanes-example \
+  --driver_input ${CMAKE_CURRENT_SOURCE_DIR}/test_suites/provider_lanes/parthinput.provider_lanes \
+  --num_steps 9")
   list(APPEND EXTRA_TEST_LABELS "")
 
   # Advection test

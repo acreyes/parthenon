@@ -161,9 +161,24 @@ const StateDescriptor *Package(MeshData<Real> *md) {
 } // namespace
 
 std::size_t RowsPack::BufferSize(const parthenon::MeshBlock &pmb,
-                                 const parthenon::NeighborBlock &,
+                                 const parthenon::NeighborBlock &nb,
                                  const parthenon::Variable<Real> &) {
-  return GetParam(pmb.packages.Get("provider_lanes").get(), "capacity");
+  return RowsCapacity(pmb.packages.Get("provider_lanes").get(), pmb.gid, nb.gid);
+}
+
+int RowsCapacity(const StateDescriptor *pkg, int gid_a, int gid_b) {
+  const int lo = std::min(gid_a, gid_b), hi = std::max(gid_a, gid_b);
+  const bool bumped = lo == GetParam(pkg, "bump_a") && hi == GetParam(pkg, "bump_b");
+  return GetParam(pkg, "capacity") +
+         (pkg->Param<bool>("rows_vary") ? (gid_a + gid_b) % 3 : 0) +
+         (bumped ? GetParam(pkg, "bump") : 0);
+}
+
+void SetBump(Mesh *pmesh, int a, int b, int bump) {
+  auto pkg = pmesh->packages.Get("provider_lanes");
+  pkg->UpdateParam("bump_a", std::min(a, b));
+  pkg->UpdateParam("bump_b", std::max(a, b));
+  pkg->UpdateParam("bump", bump);
 }
 
 void RowsPack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
@@ -173,19 +188,22 @@ void RowsPack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
                     const parthenon::BndPayload_t &payload,
                     const parthenon::BndPayloadHost_t &payload_h) {
   const int cycle = GetParam(Package(md), "cycle");
+  const int rows_min = GetParam(Package(md), "rows_min");
   int maxlen = 0;
   for (std::size_t n = 0; n < nbuffers; ++n) {
     const BndInfo &bi = info_h(idx_h(n));
     // payload_h holds the capacity (BufferSize) on entry
-    payload_h(idx_h(n)) = RowsLength(bi.send_gid, bi.channel, cycle, payload_h(idx_h(n)));
+    payload_h(idx_h(n)) =
+        RowsLength(bi.send_gid, bi.channel, cycle, payload_h(idx_h(n)), rows_min);
     maxlen = std::max(maxlen, payload_h(idx_h(n)));
   }
+  if (maxlen == 0) return;
   parthenon::par_for(
       PARTHENON_AUTO_LABEL, 0, nbuffers - 1, 0, maxlen - 1,
       KOKKOS_LAMBDA(const int n, const int row) {
         const BndInfo &bi = info(idx(n));
-        const int len =
-            RowsLength(bi.send_gid, bi.channel, cycle, static_cast<int>(bi.buf.size()));
+        const int len = RowsLength(bi.send_gid, bi.channel, cycle,
+                                   static_cast<int>(bi.buf.size()), rows_min);
         if (row < len) bi.buf(row) = RowValue(bi.send_gid, row, cycle);
       });
 }
@@ -293,6 +311,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
   pkg->AddParam("cycle", 0, Params::Mutability::Mutable);
   pkg->AddParam("capacity", pin->GetOrAddInteger("provider_lanes", "rows_capacity", 4),
                 Params::Mutability::Mutable);
+  pkg->AddParam("rows_min", pin->GetOrAddInteger("provider_lanes", "rows_min", 1));
+  pkg->AddParam("rows_vary", pin->GetOrAddBoolean("provider_lanes", "rows_vary", false));
+  pkg->AddParam("bump_a", -1, Params::Mutability::Mutable);
+  pkg->AddParam("bump_b", -1, Params::Mutability::Mutable);
+  pkg->AddParam("bump", 0, Params::Mutability::Mutable);
 
   // A cell variable whose face flux is combined over the groups
   Metadata mq({Metadata::Cell, Metadata::WithFluxes});
@@ -335,6 +358,8 @@ TaskStatus SetValues(MeshData<Real> *md, int cycle) {
 CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
   CheckResult res;
   const int capacity = GetCapacity(pmesh);
+  const auto pkg = pmesh->packages.Get("provider_lanes");
+  const int rows_min = pkg->Param<int>("rows_min");
   auto check = [&res](Real got, Real expected, std::uint64_t tag) {
     std::uint64_t bits;
     std::memcpy(&bits, &got, sizeof(bits));
@@ -382,13 +407,14 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
       int nrows = 0;
       for (int m : g) {
         if (m == gid) continue;
-        const int len = RowsLength(m, LaneGraph::Channel(layer, m), cycle, capacity);
+        const int cap = RowsCapacity(pkg.get(), m, gid);
+        const int len = RowsLength(m, LaneGraph::Channel(layer, m), cycle, cap, rows_min);
         for (int row = 0; row < len; ++row)
           row_sum += RowValue(m, row, cycle);
         nrows += len;
+        res.rows_capacity += cap;
       }
       res.rows_sent += nrows;
-      res.rows_capacity += capacity * (g.size() - 1);
       check(rows(0, 0, 0, 0, 0, 0, ch), row_sum, tag + 11 + ch);
       check(rows(0, 0, 0, 0, 0, 0, kLayers + ch), nrows, tag + 14 + ch);
       check(flux(0, 0, 0, 0, ks, js + ch, is), mean, tag + 4 + ch);

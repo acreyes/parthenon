@@ -442,7 +442,8 @@ class Mesh {
   // block, instead of the geometric neighbors. Parthenon fills in the neighbors' ranks,
   // builds the lane's tag map and buffers and runs the exchange
   // (AddLaneExchangeTasks, AddLaneFluxCorrectionTasks). Nothing is built for a lane
-  // without a provider. Coalesced comms are not supported on lanes.
+  // without a provider. With coalesced comms, a lane's buffers to a rank are combined
+  // into one message per partition (see CoalescedComms::SyncProviderLane).
   //
   // Registers (or replaces) the provider of a lane. On every rank, collectively in the
   // sense that both ends of each channel must register. If the boundary buffers already
@@ -606,7 +607,8 @@ class Mesh {
   void BuildLaneTagMap_(int lane);
   // The provider's sorted, checked neighbor list of one block, and one entry as a
   // NeighborBlock
-  void ListLaneNeighbors_(const MeshBlock &pmb, int lane, std::vector<LaneNeighbor> &lnbs);
+  void ListLaneNeighbors_(const MeshBlock &pmb, int lane,
+                          std::vector<LaneNeighbor> &lnbs);
   NeighborBlock MakeLaneNeighbor_(const MeshBlock &pmb, const LaneNeighbor &l);
   // BufferSize of every (lane neighbor, lane variable) of a block, and of all local
   // blocks into MeshBlock::lane_buffer_sizes (what the lane's buffers were built with)

@@ -1363,7 +1363,11 @@ void Mesh::BuildAndRegisterCommBuffers_() {
     for (auto &[lane, provider] : lane_providers_)
       RecordLaneBufferSizes_(lane);
   }
-  if (do_coalesced_comms) RegisterCoalescedComms(this);
+  if (do_coalesced_comms) {
+    RegisterCoalescedComms(this);
+    for (auto &[lane, provider] : lane_providers_)
+      pcoalesced_comms->SyncProviderLane(lane);
+  }
 
   if (multigrid) { // But... multigrid is sufficiently hairy that I'm
                    // going to let LFR figure this one out later.

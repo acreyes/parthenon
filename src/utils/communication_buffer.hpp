@@ -68,6 +68,8 @@ class CommBuffer {
   using buf_base_t = std::remove_pointer_t<decltype(std::declval<T>().data())>;
   buf_base_t null_buf_ = std::numeric_limits<buf_base_t>::signaling_NaN();
   bool active_ = false;
+  // Sparse receivers keep their storage when a null message arrives
+  bool keep_on_null_ = false;
 
   get_resource_func_t get_resource_;
 
@@ -138,6 +140,18 @@ class CommBuffer {
   // same-rank buffers, whose receiver is the same object) and from the MPI status of the
   // completed receive on an MPI receiver.
   int GetPayloadSize() const { return *payload_; }
+  // Coalesced receives set the length from the status message
+  void SetPayloadSize(int size) { *payload_ = size; }
+
+  void KeepStorageOnNull() { keep_on_null_ = true; }
+
+  // A null message on an allocated buffer becomes a received message of length 0
+  void SetNullReceivedEmpty() {
+    if (*state_ == BufferState::received_null && active_) {
+      *state_ = BufferState::received;
+      *payload_ = 0;
+    }
+  }
 
   void Send(bool local = false, int size = -1) noexcept;
   void SendNull(bool local = false) noexcept;
@@ -206,7 +220,8 @@ CommBuffer<T>::CommBuffer(const CommBuffer<U> &in)
       started_irecv_(in.started_irecv_), nrecv_tries_(in.nrecv_tries_),
       my_request_(in.my_request_), payload_(in.payload_), tag_(in.tag_),
       send_rank_(in.send_rank_), recv_rank_(in.recv_rank_), comm_(in.comm_),
-      active_(in.active_), get_resource_(in.get_resource_) {
+      active_(in.active_), keep_on_null_(in.keep_on_null_),
+      get_resource_(in.get_resource_) {
   my_rank = Globals::my_rank;
 }
 
@@ -246,6 +261,7 @@ CommBuffer<T> &CommBuffer<T>::operator=(const CommBuffer<U> &in) {
   recv_rank_ = in.recv_rank_;
   comm_ = in.comm_;
   active_ = in.active_;
+  keep_on_null_ = in.keep_on_null_;
   my_rank = Globals::my_rank;
   get_resource_ = in.get_resource_;
   return *this;
@@ -287,6 +303,7 @@ void CommBuffer<T>::SendNull(bool local) noexcept {
   PARTHENON_DEBUG_REQUIRE(*state_ == BufferState::stale,
                           "Trying to send_null from buffer that hasn't been staled.");
   *state_ = BufferState::sending_null;
+  *payload_ = 0;
   if (*comm_type_ == BuffCommType::sender && !local) {
 // Make sure that this request isn't still out,
 // this could be blocking
@@ -356,7 +373,7 @@ void CommBuffer<T>::TryStartReceive() noexcept {
                                       MPITypeMap<buf_base_t>::type(), send_rank_, tag_,
                                       comm_, my_request_.get()));
       } else {
-        if (active_) Free();
+        if (active_ && !keep_on_null_) Free();
         PARTHENON_MPI_CHECK(MPI_Irecv(&null_buf_, 0, MPITypeMap<buf_base_t>::type(),
                                       send_rank_, tag_, comm_, my_request_.get()));
       }

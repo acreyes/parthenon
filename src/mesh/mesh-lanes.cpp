@@ -32,6 +32,7 @@
 #include "bvals/comms/bnd_info.hpp"
 #include "bvals/comms/bvals_in_one.hpp"
 #include "bvals/comms/bvals_utils.hpp"
+#include "bvals/comms/coalesced_buffers.hpp"
 #include "bvals/neighbor_block.hpp"
 #include "globals.hpp"
 #include "mesh/mesh.hpp"
@@ -43,8 +44,10 @@ namespace parthenon {
 
 void Mesh::RegisterNeighborProvider(LaneId lane, NeighborProvider_t provider) {
   PARTHENON_REQUIRE_THROWS(static_cast<int>(lane) >= 0, "Lane ids are non-negative.");
-  PARTHENON_REQUIRE_THROWS(!do_coalesced_comms,
-                           "Provider lanes do not support coalesced comms.");
+  PARTHENON_REQUIRE_THROWS(!do_coalesced_comms ||
+                               static_cast<int>(lane) < kMaxCoalescedProviderLanes,
+                           "Coalesced comms support provider lane ids below " +
+                               std::to_string(kMaxCoalescedProviderLanes) + ".");
   PARTHENON_REQUIRE_THROWS(static_cast<bool>(provider), "Empty neighbor provider.");
   lane_providers_[static_cast<int>(lane)] = std::move(provider);
   // Before the first BuildAndRegisterCommBuffers_ the epoch is 1; the lane is then
@@ -188,6 +191,7 @@ bool Mesh::RebuildLane_(const int lane, const bool full, const std::vector<int> 
     boundary_comm_map.EraseLane(lane, on_lane);
     BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()), lane);
     RecordLaneBufferSizes_(lane);
+    if (do_coalesced_comms) pcoalesced_comms->SyncProviderLane(lane);
     return true;
   }
 
@@ -202,7 +206,7 @@ bool Mesh::RebuildLane_(const int lane, const bool full, const std::vector<int> 
 
   std::vector<channel_key_t> stale; // buffers to drop (and rebuild if still listed)
   std::vector<bool> dirty(block_list.size(), false); // blocks with buffers to build
-  std::set<int> touched;                              // ranks whose lane tags change
+  std::set<int> touched;                             // ranks whose lane tags change
   // The send buffer and, from another rank, the receive buffer of one channel
   auto drop = [&](MeshBlock *pmb, const NeighborBlock &nb, const auto &v) {
     const bool flux = v->IsSet(Metadata::Flux);
@@ -325,9 +329,10 @@ bool Mesh::RebuildLane_(const int lane, const bool full, const std::vector<int> 
   }
 
   // Every channel to a rank whose tags change gets new buffers (tags of channels on this
-  // rank are not used, so those buffers stay)
+  // rank are not used, so those buffers stay). Coalesced buffers send no messages of
+  // their own, so their tags are not used either.
   const bool local_touched = touched.erase(me) > 0;
-  if (!touched.empty()) {
+  if (!touched.empty() && !do_coalesced_comms) {
     for (auto &spmb : block_list) {
       MeshBlock *pmb = spmb.get();
       for (const auto &nb : pmb->lane_neighbors[lane]) {
@@ -361,6 +366,7 @@ bool Mesh::RebuildLane_(const int lane, const bool full, const std::vector<int> 
   // Only this lane's boundary caches re-initialize
   boundary_comm_map.BumpLaneEpoch(lane);
   BuildLaneBoundaryBuffers(mesh_data.Add("base", GetBasePartition()), lane, &dirty);
+  if (do_coalesced_comms) pcoalesced_comms->SyncProviderLane(lane);
   return true;
 }
 

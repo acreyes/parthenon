@@ -55,7 +55,9 @@ BndId BndId::GetSend(MeshBlock *pmb, const NeighborBlock &nb,
   out.rank_send() = Globals::my_rank;
   out.rank_recv() = nb.rank;
   out.partition_tag() = partition_tag;
-  out.size() = BndInfo::GetSendBndInfo(pmb, nb, v, nullptr).size();
+  out.size() = IsLaneBoundary(b_type)
+                   ? GetLaneBufferSize(pmb, nb, v, b_type != BoundaryType::lane)
+                   : BndInfo::GetSendBndInfo(pmb, nb, v, nullptr).size();
   out.start_idx() = start_idx;
   return out;
 }

@@ -15,9 +15,11 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -37,16 +39,58 @@
 #include "mesh/meshblock.hpp"
 #include "utils/comms_trace.hpp"
 #include "utils/communication_buffer.hpp"
+#include "utils/instrument.hpp"
 
 namespace parthenon {
 
 namespace {
 // All comm lanes of a sender BoundaryType share a communicator, so combine the partition
-// tag and the lane into a unique MPI tag for the data message (the sparse status message
-// uses this tag + 1)
-int CoalescedDataTag(Mesh *pmesh, BoundaryType b_type, int partition_tag, int lane) {
+// tag and the lane (and on provider lanes the provider lane) into a unique MPI tag for
+// the data message (the sparse status message uses this tag + 1)
+int CoalescedDataTag(Mesh *pmesh, BoundaryType b_type, int partition_tag, int lane,
+                     int provider_lane) {
   const int nlanes = pmesh->GetNumberOfCommLanes(GetAssociatedSender(b_type));
-  return 2 * (nlanes * partition_tag + lane);
+  if (provider_lane < 0) return 2 * (nlanes * partition_tag + lane);
+  return 2 *
+         ((nlanes * partition_tag + lane) * kMaxCoalescedProviderLanes + provider_lane);
+}
+
+// Tag of the lane info messages of one (sender type, comm lane, provider lane)
+int LaneInfoTagOf(BoundaryType b_type, int lane, int provider_lane) {
+  const bool flux = GetAssociatedSender(b_type) == BoundaryType::lane_flxcor_send;
+  return 2 * (lane * kMaxCoalescedProviderLanes + provider_lane) + (flux ? 1 : 0);
+}
+
+// The entries of a CoalescedComms map with one (BoundaryType, comm lane, provider lane)
+template <class MAP>
+auto EntriesBegin(MAP &m, BoundaryType b_type, int lane, int provider_lane) {
+  return m.lower_bound(CoalescedComms::rank_key_t{b_type, lane, provider_lane, INT_MIN});
+}
+template <class IT>
+bool InEntries(const IT &it, const IT &end, BoundaryType b_type, int lane,
+               int provider_lane) {
+  return it != end && std::get<0>(it->first) == b_type &&
+         std::get<1>(it->first) == lane && std::get<2>(it->first) == provider_lane;
+}
+
+void WaitForWrite(CoalescedBuffer &cb) {
+  constexpr std::int64_t max_it = 1e10;
+  std::int64_t it = 0;
+  while (!cb.IsAvailableForWrite() && ++it < max_it) {
+  }
+  PARTHENON_REQUIRE(it < max_it, "Waited too long for a coalesced send to complete.");
+}
+
+// Calls f(pmb, nb, v) for every boundary of type BTYPE of provider lane provider_lane
+// with a block on another rank
+template <BoundaryType BTYPE, class F>
+void ForEachOffRankLaneBoundary(std::shared_ptr<MeshData<Real>> &md, int provider_lane,
+                                F f) {
+  using namespace loops::shorthands;
+  loops::ForEachBoundary<BTYPE>(md, provider_lane,
+                                [&](auto pmb, sp_mbd_t, const nb_t &nb, const sp_cv_t v) {
+                                  if (nb.rank != Globals::my_rank) f(pmb, nb, v);
+                                });
 }
 
 // Copy between the var-boundary buffers and the coalesced buffer, splitting each buffer
@@ -65,43 +109,49 @@ void CopyCoalesced(Mesh *pmesh, ParArray1DRaw<BndId> &bids) {
         const int b = team_member.league_rank() / nteams_per_buffer;
         const int bteam = team_member.league_rank() % nteams_per_buffer;
         if (bids[b].buf_allocated) {
-          const SplitFlatIndexRangeAmongTeams split(nteams_per_buffer, 1,
-                                                    bids[b].size());
+          const SplitFlatIndexRangeAmongTeams split(nteams_per_buffer, 1, bids[b].size());
           Real *com_buf = &(bids[b].coalesced_buf(bids[b].start_idx()));
           Real *buf = &(bids[b].buf(0));
-          Kokkos::parallel_for(
-              Kokkos::TeamThreadRange<>(team_member, split.GetStart(bteam),
-                                        split.GetEnd(bteam)),
-              [&](const int idx) {
-                if constexpr (TO_COALESCED) {
-                  com_buf[idx] = buf[idx];
-                } else {
-                  buf[idx] = com_buf[idx];
-                }
-              });
+          Kokkos::parallel_for(Kokkos::TeamThreadRange<>(team_member,
+                                                         split.GetStart(bteam),
+                                                         split.GetEnd(bteam)),
+                               [&](const int idx) {
+                                 if constexpr (TO_COALESCED) {
+                                   com_buf[idx] = buf[idx];
+                                 } else {
+                                   buf[idx] = com_buf[idx];
+                                 }
+                               });
         }
       });
 }
 } // namespace
 
 //----------------------------------------------------------------------------------------
-CoalescedBuffer::CoalescedBuffer(bool sender, int partition_tag, int lane, int other_rank,
-                                 BoundaryType b_type, mpi_comm_t comm, Mesh *pmesh)
-    : sender(sender), partition_tag(partition_tag), lane(lane), other_rank(other_rank),
-      b_type(b_type), comm(comm), pmesh(pmesh), current_size(0),
+CoalescedBuffer::CoalescedBuffer(bool sender, int partition_tag, int lane,
+                                 int provider_lane, int other_rank, BoundaryType b_type,
+                                 mpi_comm_t comm, Mesh *pmesh)
+    : sender(sender), partition_tag(partition_tag), lane(lane),
+      provider_lane(provider_lane), other_rank(other_rank), b_type(b_type), comm(comm),
+      pmesh(pmesh), current_size(0),
       coalesced_comm_buffer(
-          CoalescedDataTag(pmesh, b_type, partition_tag, lane),
+          CoalescedDataTag(pmesh, b_type, partition_tag, lane, provider_lane),
           sender ? Globals::my_rank : other_rank, sender ? other_rank : Globals::my_rank,
           comm, [](int size) { return buf_t("Combined Buffer", 2 * size); }, true),
       sparse_status_buffer(
-          CoalescedDataTag(pmesh, b_type, partition_tag, lane) + 1,
+          CoalescedDataTag(pmesh, b_type, partition_tag, lane, provider_lane) + 1,
           sender ? Globals::my_rank : other_rank, sender ? other_rank : Globals::my_rank,
-          comm, [](int size) { return std::vector<int>(size); }, true) {}
+          comm, [](int size) { return std::vector<int>(size); }, true) {
+  // Provider lane messages can be empty; the combined buffer keeps its storage
+  if (OnProviderLane()) coalesced_comm_buffer.KeepStorageOnNull();
+}
 
 //----------------------------------------------------------------------------------------
 ParArray1DRaw<BndId> &CoalescedBuffer::GetBndIdsOnDevice(const std::set<Uid_t> &vars,
                                                          int *pcomb_size) {
   const auto &var_set = vars.size() == 0 ? all_vars : vars;
+  // On provider lanes a buffer takes its payload length, otherwise its size
+  const bool by_payload = OnProviderLane();
   int nbnd_id{0};
   std::size_t comb_size{0};
   for (auto uid : var_set) {
@@ -111,7 +161,7 @@ ParArray1DRaw<BndId> &CoalescedBuffer::GetBndIdsOnDevice(const std::set<Uid_t> &
     for (auto &[bnd_id, pvbbuf] : coalesced_info_buf.at(uid)) {
       auto buf_state = pvbbuf->GetState();
       if ((buf_state == BufferState::sending) || (buf_state == BufferState::received))
-        comb_size += bnd_id.size();
+        comb_size += by_payload ? pvbbuf->GetPayloadSize() : bnd_id.size();
     }
   }
   if (pcomb_size != nullptr) *pcomb_size = comb_size;
@@ -152,14 +202,19 @@ ParArray1DRaw<BndId> &CoalescedBuffer::GetBndIdsOnDevice(const std::set<Uid_t> &
 
       const bool alloc =
           (buf_state == BufferState::sending) || (buf_state == BufferState::received);
+      const int len = alloc && by_payload ? pvbbuf->GetPayloadSize() : bnd_id.size();
 
-      // Test if this boundary has changed
-      if (!bid_h.SameBVChannel(bnd_id) || (bid_h.buf_allocated != alloc) ||
+      // Test if this boundary has changed (the channel, ignoring the size, then the size)
+      bool same_channel = true;
+      for (int i = 0; i < 8; ++i)
+        same_channel = same_channel && bid_h.data[i] == bnd_id.data[i];
+      if (!same_channel || bid_h.size() != len || (bid_h.buf_allocated != alloc) ||
           (bid_h.start_idx() != c_buf_idx) ||
           !UsingSameResource(bid_h.buf, pvbbuf->buffer()) ||
           bid_h.coalesced_buf.data() != coalesced_comm_buffer.buffer().data()) {
         updated = true;
         bid_h = bnd_id;
+        bid_h.size() = len;
         bid_h.buf_allocated = alloc;
         bid_h.start_idx() = c_buf_idx;
         bid_h.coalesced_buf = coalesced_comm_buffer.buffer();
@@ -198,7 +253,7 @@ void CoalescedBuffer::TraceClose() {
 }
 
 //----------------------------------------------------------------------------------------
-void CoalescedBuffer::PackAndSend(const std::set<Uid_t> &vars) {
+void CoalescedBuffer::PackAndSend(const std::set<Uid_t> &vars, int epoch) {
   // The completion of the previous send was never observed
   trace_send_rec = nullptr;
   PARTHENON_REQUIRE(coalesced_comm_buffer.IsAvailableForWrite(),
@@ -224,14 +279,16 @@ void CoalescedBuffer::PackAndSend(const std::set<Uid_t> &vars) {
   // Send the sparse null info as well. This has an entry for every buffer, not just the
   // ones in var_set, since the receiver may unpack this message while it is working on
   // a MeshData with a different set of variables and so must learn var_set from here
-  const std::size_t nbuf_total = TotalBuffers();
+  const int head = StatusHeader();
+  const std::size_t nbuf_total = TotalBuffers() + head;
   if (nbuf_total != sparse_status_buffer.buffer().size()) {
     sparse_status_buffer.Allocate(nbuf_total);
   }
 
   const auto &var_set = vars.size() == 0 ? all_vars : vars;
   auto &stat = sparse_status_buffer.buffer();
-  int idx{0};
+  if (head > 0) stat[0] = epoch;
+  int idx{head};
   for (auto &[uid, v] : coalesced_info_buf) {
     const bool in_message = var_set.count(uid) > 0;
     for (auto &[bnd_id, pvbbuf] : v) {
@@ -241,7 +298,11 @@ void CoalescedBuffer::PackAndSend(const std::set<Uid_t> &vars) {
         PARTHENON_REQUIRE(state == BufferState::sending ||
                               state == BufferState::sending_null,
                           "Bad state.");
-        send_type = (state == BufferState::sending);
+        if (OnProviderLane()) {
+          send_type = state == BufferState::sending ? pvbbuf->GetPayloadSize() : 0;
+        } else {
+          send_type = (state == BufferState::sending);
+        }
       }
       stat[idx] = send_type;
       ++idx;
@@ -264,7 +325,13 @@ void CoalescedBuffer::PackAndSend(const std::set<Uid_t> &vars) {
 }
 
 //----------------------------------------------------------------------------------------
-bool CoalescedBuffer::TryReceiveAndUnpack() {
+bool CoalescedBuffer::TryReceiveStatus() {
+  if (sparse_status_buffer.GetState() == BufferState::received) return true;
+  return sparse_status_buffer.TryReceive();
+}
+
+//----------------------------------------------------------------------------------------
+bool CoalescedBuffer::TryReceiveAndUnpack(int epoch) {
   if ((sparse_status_buffer.GetState() == BufferState::received) &&
       (coalesced_comm_buffer.GetState() == BufferState::received))
     return true;
@@ -291,12 +358,15 @@ bool CoalescedBuffer::TryReceiveAndUnpack() {
   }
   if (!received_sparse) return false;
   auto &stat = sparse_status_buffer.buffer();
+  const int head = StatusHeader();
+  // A provider lane message from a newer layout waits for its lane info
+  if (head > 0 && stat[0] != epoch) return false;
   PARTHENON_REQUIRE(sparse_status_buffer.GetPayloadSize() ==
-                        static_cast<int>(TotalBuffers()),
+                        static_cast<int>(TotalBuffers()) + head,
                     "Coalesced status message does not cover all buffers.");
 
   std::set<Uid_t> var_set;
-  int idx{0};
+  int idx{head};
   for (auto &[uid, v] : coalesced_info_buf) {
     if (v.size() > 0 && stat[idx] != not_in_message) var_set.insert(uid);
     idx += v.size();
@@ -319,9 +389,20 @@ bool CoalescedBuffer::TryReceiveAndUnpack() {
   if (!received) return false;
 
   // Allocate and free buffers as required
-  idx = 0;
+  idx = head;
   for (auto &[uid, v] : coalesced_info_buf) {
     for (auto &[bnd_id, pvbbuf] : v) {
+      if (OnProviderLane()) {
+        // The entry is the payload length; an empty buffer keeps its storage
+        const int len = stat[idx++];
+        if (len == not_in_message) continue;
+        pvbbuf->SetReceived();
+        if (!pvbbuf->IsActive()) pvbbuf->Allocate();
+        PARTHENON_REQUIRE(len <= static_cast<int>(pvbbuf->buffer().size()),
+                          "Coalesced provider lane payload exceeds the receive buffer.");
+        pvbbuf->SetPayloadSize(len);
+        continue;
+      }
       if (stat[idx] == 1) {
         pvbbuf->SetReceived();
         if (!pvbbuf->IsActive()) pvbbuf->Allocate();
@@ -341,6 +422,9 @@ bool CoalescedBuffer::TryReceiveAndUnpack() {
     CopyCoalesced<false>(pmesh, bids);
     nbids = bids.size();
   }
+  PARTHENON_REQUIRE(!OnProviderLane() ||
+                        comb_size == coalesced_comm_buffer.GetPayloadSize(),
+                    "Coalesced provider lane message length differs from its payloads.");
   coalesced_comm_buffer.Stale();
   sparse_status_buffer.Stale();
   if (trace_open) {
@@ -364,11 +448,19 @@ void CoalescedBuffer::AddVarBoundary(BndId &bnd_id) {
   all_vars.insert(bnd_id.var_id());
 }
 
+void CoalescedBuffer::ClearVarBoundaries() {
+  coalesced_info_buf.clear();
+  all_vars.clear();
+  current_size = 0;
+}
+
 void CoalescedBuffer::AddVarBoundary(MeshBlock *pmb, const NeighborBlock &nb,
                                      const std::shared_ptr<Variable<Real>> &var) {
   // Store both the variable-boundary buffer information and a pointer to the v-b buffer
   // itself associated with var ids
   BndId bnd_id = BndId::GetSend(pmb, nb, var, b_type, partition_tag, -1, lane);
+  PARTHENON_REQUIRE(!OnProviderLane() || bnd_id.size() > 0,
+                    "Provider lane buffers must have a positive BufferSize.");
   AddVarBoundary(bnd_id);
 }
 
@@ -376,9 +468,11 @@ void CoalescedBuffer::AddVarBoundary(MeshBlock *pmb, const NeighborBlock &nb,
 //----------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------
 CoalescedBuffersRank::CoalescedBuffersRank(int o_rank, BoundaryType b_type, int lane,
-                                           bool send, mpi_comm_t comm, Mesh *pmesh)
-    : other_rank(o_rank), b_type(b_type), lane(lane), sender(send), buffers_built(false),
-      comm(comm), pmesh(pmesh) {
+                                           bool send, mpi_comm_t comm, Mesh *pmesh,
+                                           int provider_lane, mpi_comm_t info_comm)
+    : other_rank(o_rank), b_type(b_type), lane(lane), provider_lane(provider_lane),
+      sender(send), buffers_built(false), comm(comm), pmesh(pmesh), info_comm(info_comm) {
+  if (provider_lane >= 0) info_tag = LaneInfoTagOf(b_type, lane, provider_lane);
 
   // There is a separate communicator for each sender BoundaryType, so the comm lane is
   // sufficient to make the info message tag unique
@@ -400,8 +494,8 @@ void CoalescedBuffersRank::AddSendBuffer(int partition_tag, MeshBlock *pmb,
                                          const std::shared_ptr<Variable<Real>> &var) {
   if (coalesced_bufs.count(partition_tag) == 0)
     coalesced_bufs.emplace(std::make_pair(
-        partition_tag, CoalescedBuffer(true, partition_tag, lane, other_rank, b_type,
-                                       comm, pmb->pmy_mesh)));
+        partition_tag, CoalescedBuffer(true, partition_tag, lane, provider_lane,
+                                       other_rank, b_type, comm, pmb->pmy_mesh)));
 
   auto &coal_buf = coalesced_bufs.at(partition_tag);
   coal_buf.AddVarBoundary(pmb, nb, var);
@@ -426,8 +520,8 @@ bool CoalescedBuffersRank::TryReceiveBufInfo() {
 
       // Create the new partition
       coalesced_bufs.emplace(std::make_pair(
-          partition_tag,
-          CoalescedBuffer(false, partition_tag, lane, other_rank, b_type, comm, pmesh)));
+          partition_tag, CoalescedBuffer(false, partition_tag, lane, provider_lane,
+                                         other_rank, b_type, comm, pmesh)));
       auto &coal_buf = coalesced_bufs.at(partition_tag);
 
       for (int b = 0; b < nbuf; ++b) {
@@ -487,7 +581,7 @@ void CoalescedBuffersRank::PackAndSend(MeshData<Real> *pmd) {
   // there is nothing to send
   const int partition_tag = pmesh->pcoalesced_comms->GetPartitionTag(pmd);
   if (coalesced_bufs.count(partition_tag))
-    coalesced_bufs.at(partition_tag).PackAndSend(pmd->GetUids());
+    coalesced_bufs.at(partition_tag).PackAndSend(pmd->GetUids(), info_epoch);
 }
 
 //----------------------------------------------------------------------------------------
@@ -508,13 +602,168 @@ bool CoalescedBuffersRank::TryReceiveAndUnpack(MeshData<Real> *pmd, int partitio
 }
 
 //----------------------------------------------------------------------------------------
+CoalescedBuffer &CoalescedBuffersRank::GetPartition(int partition_tag) {
+  auto it = coalesced_bufs.find(partition_tag);
+  if (it == coalesced_bufs.end())
+    it = coalesced_bufs
+             .emplace(partition_tag,
+                      CoalescedBuffer(sender, partition_tag, lane, provider_lane,
+                                      other_rank, b_type, comm, pmesh))
+             .first;
+  return it->second;
+}
+
+//----------------------------------------------------------------------------------------
+std::vector<int> CoalescedBuffersRank::SerializeLaneInfo() const {
+  std::vector<int> out{static_cast<int>(coalesced_bufs.size())};
+  for (const auto &[partition_tag, cb] : coalesced_bufs) {
+    out.insert(out.end(),
+               {partition_tag, static_cast<int>(cb.TotalBuffers()), cb.current_size});
+    for (const auto &[uid, v] : cb.coalesced_info_buf) {
+      for (const auto &[bnd_id, pbuf] : v)
+        out.insert(out.end(), bnd_id.data, bnd_id.data + BndId::NDAT);
+    }
+  }
+  return out;
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedBuffersRank::DrainLaneInfos() {
+#ifdef MPI_PARALLEL
+  while (true) {
+    int flag;
+    MPI_Status status;
+    PARTHENON_MPI_CHECK(MPI_Iprobe(other_rank, info_tag, info_comm, &flag, &status));
+    if (!flag) return;
+    int n;
+    PARTHENON_MPI_CHECK(MPI_Get_count(&status, MPI_INT, &n));
+    std::vector<int> info(n);
+    PARTHENON_MPI_CHECK(MPI_Recv(info.data(), n, MPI_INT, other_rank, info_tag, info_comm,
+                                 MPI_STATUS_IGNORE));
+    const int epoch = info[0];
+    // Superseded by the layout in use
+    if (epoch <= info_epoch) continue;
+    // Poll the status messages of its partitions from now on
+    int idx = 2;
+    for (int p = 0; p < info[1]; ++p) {
+      GetPartition(info[idx]);
+      idx += nper_part + BndId::NDAT * info[idx + 1];
+    }
+    pending_infos[epoch] = std::move(info);
+  }
+#endif
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedBuffersRank::ApplyLaneInfo(int epoch) {
+  const std::vector<int> info = std::move(pending_infos.at(epoch));
+  pending_infos.erase(pending_infos.begin(), pending_infos.upper_bound(epoch));
+  for (auto &[partition_tag, cb] : coalesced_bufs)
+    cb.ClearVarBoundaries();
+  int idx = 2;
+  for (int p = 0; p < info[1]; ++p) {
+    auto &cb = GetPartition(info[idx]);
+    const int nbuf = info[idx + 1];
+    idx += nper_part;
+    for (int b = 0; b < nbuf; ++b) {
+      BndId bnd_id(&info[idx]);
+      idx += BndId::NDAT;
+      PARTHENON_REQUIRE(pmesh->boundary_comm_map.count(GetChannelKey(bnd_id)),
+                        "Rank " + std::to_string(other_rank) + " sent provider lane " +
+                            std::to_string(provider_lane) +
+                            " data for a buffer this rank does not have (asymmetric "
+                            "lane graph, or RebuildLane missing on this rank).");
+      cb.AddVarBoundary(bnd_id);
+    }
+  }
+  // Partitions that no longer send to this rank
+  for (auto it = coalesced_bufs.begin(); it != coalesced_bufs.end();) {
+    if (it->second.TotalBuffers() == 0) {
+      PARTHENON_REQUIRE(it->second.sparse_status_buffer.GetState() !=
+                            BufferState::received,
+                        "Status message from a partition without buffers.");
+      it = coalesced_bufs.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  info_epoch = epoch;
+  buffers_built = true;
+  CheckLaneLayout();
+  PARTHENON_REQUIRE(info_valid, "Provider lane " + std::to_string(provider_lane) +
+                                    " buffers from rank " + std::to_string(other_rank) +
+                                    " differ from this rank's receive buffers "
+                                    "(asymmetric lane graph or buffer sizes).");
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedBuffersRank::CheckLaneLayout() {
+  if (info_epoch < 0) {
+    info_valid = false;
+    return;
+  }
+  bool found = true;
+  std::vector<Mesh::channel_key_t> keys;
+  for (auto &[partition_tag, cb] : coalesced_bufs) {
+    for (auto &[uid, v] : cb.coalesced_info_buf) {
+      for (auto &[bnd_id, pbuf] : v) {
+        auto key = GetChannelKey(bnd_id);
+        if (pmesh->boundary_comm_map.count(key)) {
+          pbuf = &(pmesh->boundary_comm_map.at(key));
+        } else {
+          pbuf = nullptr;
+          found = false;
+        }
+        keys.push_back(std::move(key));
+      }
+    }
+  }
+  std::sort(keys.begin(), keys.end());
+  info_valid = found && keys == expected_keys;
+}
+
+//----------------------------------------------------------------------------------------
+bool CoalescedBuffersRank::TryReceiveLane() {
+  if (!info_valid) DrainLaneInfos();
+  // The epoch of the sender's layout, from any status message that has arrived
+  int epoch = -1;
+  for (auto &[partition_tag, cb] : coalesced_bufs)
+    if (cb.TryReceiveStatus()) epoch = std::max(epoch, cb.StatusEpoch());
+  if (epoch < 0) return false;
+  if (epoch != info_epoch) {
+    PARTHENON_REQUIRE(epoch > info_epoch, "Provider lane message from rank " +
+                                              std::to_string(other_rank) +
+                                              " is older than the layout in use.");
+    if (pending_infos.count(epoch) == 0) DrainLaneInfos();
+    if (pending_infos.count(epoch) == 0) return false;
+    ApplyLaneInfo(epoch);
+  }
+  PARTHENON_REQUIRE(info_valid, "Rank " + std::to_string(other_rank) +
+                                    " kept its provider lane " +
+                                    std::to_string(provider_lane) +
+                                    " layout, but this rank's receive buffers from it "
+                                    "changed (asymmetric lane graph or buffer sizes, or "
+                                    "RebuildLane missing on the other rank).");
+  bool all_received = true;
+  for (auto &[partition_tag, cb] : coalesced_bufs)
+    all_received = cb.TryReceiveAndUnpack(info_epoch) && all_received;
+  return all_received;
+}
+
+//----------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------
 CoalescedComms::CoalescedComms(Mesh *pmesh) : pmesh(pmesh) {
   // TODO(LFR): Switch to a different communicator for each BoundaryType pair
-  for (auto b_type :
-       {BoundaryType::any, BoundaryType::flxcor_send, BoundaryType::gmg_same,
-        BoundaryType::gmg_restrict_send, BoundaryType::gmg_prolongate_send}) {
+  std::vector<BoundaryType> types{BoundaryType::any, BoundaryType::flxcor_send,
+                                  BoundaryType::gmg_same, BoundaryType::gmg_restrict_send,
+                                  BoundaryType::gmg_prolongate_send};
+  // Provider lanes get their own communicators only when they can coalesce
+  if (pmesh->do_coalesced_comms) {
+    types.push_back(BoundaryType::lane);
+    types.push_back(BoundaryType::lane_flxcor_send);
+  }
+  for (auto b_type : types) {
     auto &comm = comms[b_type];
 #ifdef MPI_PARALLEL
     PARTHENON_MPI_CHECK(MPI_Comm_dup(MPI_COMM_WORLD, &comm));
@@ -522,13 +771,25 @@ CoalescedComms::CoalescedComms(Mesh *pmesh) : pmesh(pmesh) {
     comm = 0;
 #endif
   }
+#ifdef MPI_PARALLEL
+  lane_info_comm = MPI_COMM_NULL;
+  if (pmesh->do_coalesced_comms)
+    PARTHENON_MPI_CHECK(MPI_Comm_dup(MPI_COMM_WORLD, &lane_info_comm));
+#else
+  lane_info_comm = 0;
+#endif
 }
 
 //----------------------------------------------------------------------------------------
 CoalescedComms::~CoalescedComms() {
 #ifdef MPI_PARALLEL
+  // Lane infos nobody read (the lane was not exchanged again) are let go
+  for (auto &[info, req] : lane_infos_in_flight)
+    if (req != MPI_REQUEST_NULL) PARTHENON_MPI_CHECK(MPI_Request_free(&req));
   for (auto &[b_type, comm] : comms)
     PARTHENON_MPI_CHECK(MPI_Comm_free(&comm));
+  if (lane_info_comm != MPI_COMM_NULL)
+    PARTHENON_MPI_CHECK(MPI_Comm_free(&lane_info_comm));
 #endif
 }
 
@@ -578,7 +839,7 @@ void CoalescedComms::AddSendBuffer(const BlockListPartition *partition, MeshBloc
                                    BoundaryType b_type, int lane) {
   PARTHENON_REQUIRE(partition_tags.count(partition),
                     "Partition must be registered before adding buffers.");
-  const rank_key_t key{nb.rank, b_type, lane};
+  const rank_key_t key{b_type, lane, -1, nb.rank};
   if (coalesced_send_buffers.count(key) == 0)
     coalesced_send_buffers.emplace(std::make_pair(
         key, CoalescedBuffersRank(nb.rank, b_type, lane, true,
@@ -594,7 +855,7 @@ void CoalescedComms::AddRecvBuffer(MeshBlock *pmb, const NeighborBlock &nb,
   // We don't actually know enough here to register this particular buffer, but we do
   // know that it's existence implies that we need to receive a message from the
   // neighbor block rank eventually telling us the details
-  const rank_key_t key{nb.rank, b_type, lane};
+  const rank_key_t key{b_type, lane, -1, nb.rank};
   if (coalesced_recv_buffers.count(key) == 0)
     coalesced_recv_buffers.emplace(std::make_pair(
         key, CoalescedBuffersRank(nb.rank, b_type, lane, false,
@@ -603,8 +864,144 @@ void CoalescedComms::AddRecvBuffer(MeshBlock *pmb, const NeighborBlock &nb,
 
 //----------------------------------------------------------------------------------------
 void CoalescedComms::ResolveAndSendSendBuffers() {
+  // Provider lanes send their layouts in SyncProviderLane
   for (auto &[id, buf] : coalesced_send_buffers)
-    buf.ResolveAndSendBufInfo();
+    if (!buf.OnProviderLane()) buf.ResolveAndSendBufInfo();
+}
+
+//----------------------------------------------------------------------------------------
+int CoalescedComms::LaneInfoTag(BoundaryType b_type, int lane, int provider_lane) const {
+  return LaneInfoTagOf(b_type, lane, provider_lane);
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedComms::SendLaneInfo(CoalescedBuffersRank *cbr, std::vector<int> info) {
+  const rank_key_t key{cbr->b_type, cbr->lane, cbr->provider_lane, cbr->other_rank};
+  auto eit = lane_info_epochs.find(key);
+  const int epoch = eit == lane_info_epochs.end() ? 0 : eit->second + 1;
+  lane_info_epochs[key] = epoch;
+  cbr->info_epoch = epoch;
+  info.insert(info.begin(), epoch);
+#ifdef MPI_PARALLEL
+  for (auto it = lane_infos_in_flight.begin(); it != lane_infos_in_flight.end();) {
+    int flag;
+    PARTHENON_MPI_CHECK(MPI_Test(&(it->second), &flag, MPI_STATUS_IGNORE));
+    it = flag ? lane_infos_in_flight.erase(it) : std::next(it);
+  }
+  lane_infos_in_flight.emplace_back(std::move(info), MPI_REQUEST_NULL);
+  auto &[buf, req] = lane_infos_in_flight.back();
+  PARTHENON_MPI_CHECK(MPI_Isend(buf.data(), buf.size(), MPI_INT, cbr->other_rank,
+                                cbr->info_tag, lane_info_comm, &req));
+#endif
+  lane_infos_sent[cbr->provider_lane]++;
+}
+
+//----------------------------------------------------------------------------------------
+void CoalescedComms::SyncProviderLane(int provider_lane) {
+  PARTHENON_INSTRUMENT
+  PARTHENON_REQUIRE(provider_lane >= 0 && provider_lane < kMaxCoalescedProviderLanes,
+                    "Provider lane id out of range for coalesced comms.");
+  // Senders: refill the layouts of the existing entries (keeping their combined buffers)
+  // and add the new ones; send a lane info wherever a layout changed
+  for (auto b_type : {BoundaryType::lane, BoundaryType::lane_flxcor_send}) {
+    const int ncl = pmesh->GetNumberOfCommLanes(b_type);
+    std::map<rank_key_t, std::vector<int>> old_info;
+    for (int cl = 0; cl < ncl; ++cl) {
+      for (auto it = EntriesBegin(coalesced_send_buffers, b_type, cl, provider_lane);
+           InEntries(it, coalesced_send_buffers.end(), b_type, cl, provider_lane); ++it) {
+        old_info[it->first] = it->second.SerializeLaneInfo();
+        for (auto &[partition_tag, cb] : it->second.coalesced_bufs)
+          cb.ClearVarBoundaries();
+      }
+    }
+    for (auto &partition : pmesh->GetDefaultBlockPartitions()) {
+      RegisterPartition(partition.get());
+      const int partition_tag = partition_tags.at(partition.get());
+      auto &md = pmesh->mesh_data.Add("base", partition);
+      auto add = [&](auto pmb, const NeighborBlock &nb,
+                     const std::shared_ptr<Variable<Real>> &v) {
+        for (int cl = 0; cl < ncl; ++cl) {
+          const rank_key_t key{b_type, cl, provider_lane, nb.rank};
+          auto it = coalesced_send_buffers.find(key);
+          if (it == coalesced_send_buffers.end())
+            it = coalesced_send_buffers
+                     .emplace(key, CoalescedBuffersRank(nb.rank, b_type, cl, true,
+                                                        comms.at(b_type), pmesh,
+                                                        provider_lane, lane_info_comm))
+                     .first;
+          it->second.GetPartition(partition_tag).AddVarBoundary(pmb, nb, v);
+        }
+      };
+      if (b_type == BoundaryType::lane) {
+        ForEachOffRankLaneBoundary<BoundaryType::lane>(md, provider_lane, add);
+      } else {
+        ForEachOffRankLaneBoundary<BoundaryType::lane_flxcor_send>(md, provider_lane,
+                                                                   add);
+      }
+    }
+    for (int cl = 0; cl < ncl; ++cl) {
+      auto it = EntriesBegin(coalesced_send_buffers, b_type, cl, provider_lane);
+      while (InEntries(it, coalesced_send_buffers.end(), b_type, cl, provider_lane)) {
+        auto &cbr = it->second;
+        for (auto pit = cbr.coalesced_bufs.begin(); pit != cbr.coalesced_bufs.end();) {
+          if (pit->second.TotalBuffers() > 0) {
+            ++pit;
+            continue;
+          }
+          WaitForWrite(pit->second);
+          pit = cbr.coalesced_bufs.erase(pit);
+        }
+        if (cbr.coalesced_bufs.empty()) {
+          it = coalesced_send_buffers.erase(it);
+          continue;
+        }
+        auto info = cbr.SerializeLaneInfo();
+        const auto old = old_info.find(it->first);
+        if (old == old_info.end() || old->second != info)
+          SendLaneInfo(&cbr, std::move(info));
+        cbr.buffers_built = true;
+        ++it;
+      }
+    }
+  }
+
+  // Receivers: one entry per rank with receive buffers on the lane, each holding the
+  // keys of those buffers; layouts arrive with the next exchange
+  auto &base = pmesh->mesh_data.Add("base", pmesh->GetBasePartition());
+  for (auto b_type : {BoundaryType::lane, BoundaryType::lane_flxcor_recv}) {
+    const int ncl = pmesh->GetNumberOfCommLanes(b_type);
+    std::map<rank_key_t, std::vector<Mesh::channel_key_t>> expected;
+    auto add = [&](auto pmb, const NeighborBlock &nb,
+                   const std::shared_ptr<Variable<Real>> &v) {
+      for (int cl = 0; cl < ncl; ++cl)
+        expected[{b_type, cl, provider_lane, nb.rank}].push_back(
+            ReceiveKey(pmb, nb, v, b_type, cl));
+    };
+    if (b_type == BoundaryType::lane) {
+      ForEachOffRankLaneBoundary<BoundaryType::lane>(base, provider_lane, add);
+    } else {
+      ForEachOffRankLaneBoundary<BoundaryType::lane_flxcor_recv>(base, provider_lane,
+                                                                 add);
+    }
+    for (int cl = 0; cl < ncl; ++cl) {
+      auto it = EntriesBegin(coalesced_recv_buffers, b_type, cl, provider_lane);
+      while (InEntries(it, coalesced_recv_buffers.end(), b_type, cl, provider_lane))
+        it = expected.count(it->first) ? std::next(it) : coalesced_recv_buffers.erase(it);
+    }
+    for (auto &[key, keys] : expected) {
+      auto it = coalesced_recv_buffers.find(key);
+      if (it == coalesced_recv_buffers.end())
+        it = coalesced_recv_buffers
+                 .emplace(key, CoalescedBuffersRank(std::get<3>(key), b_type,
+                                                    std::get<1>(key), false,
+                                                    comms.at(GetAssociatedSender(b_type)),
+                                                    pmesh, provider_lane, lane_info_comm))
+                 .first;
+      std::sort(keys.begin(), keys.end());
+      it->second.expected_keys = std::move(keys);
+      it->second.CheckLaneLayout();
+    }
+  }
 }
 
 //----------------------------------------------------------------------------------------
@@ -616,7 +1013,7 @@ void CoalescedComms::ReceiveBufferInfo() {
   do {
     all_received = true;
     for (auto &[id, buf] : coalesced_recv_buffers)
-      all_received = buf.TryReceiveBufInfo() && all_received;
+      if (!buf.OnProviderLane()) all_received = buf.TryReceiveBufInfo() && all_received;
     receive_iters++;
   } while (!all_received && receive_iters < max_it);
   PARTHENON_REQUIRE(
@@ -682,6 +1079,12 @@ void CoalescedComms::PrintCensus() {
       return "gmg_prolongate_send";
     case BoundaryType::gmg_prolongate_recv:
       return "gmg_prolongate_recv";
+    case BoundaryType::lane:
+      return "lane";
+    case BoundaryType::lane_flxcor_send:
+      return "lane_flxcor_send";
+    case BoundaryType::lane_flxcor_recv:
+      return "lane_flxcor_recv";
     }
     return "unknown";
   };
@@ -695,8 +1098,9 @@ void CoalescedComms::PrintCensus() {
   std::printf("\n==== Coalesced comms census (build %d): %d ranks on %d nodes, %d "
               "messages per exchange of all variables ====\n",
               build, nranks, comms_trace::NumNodes(), nmsg);
-  std::printf("Each message is accompanied by a status message of nbuf ints. Sizes assume "
-              "every variable is communicated.\n");
+  std::printf(
+      "Each message is accompanied by a status message of nbuf ints. Sizes assume "
+      "every variable is communicated.\n");
   for (int n = 0; n < comms_trace::NumNodes(); ++n) {
     std::printf("  node %d:", n);
     std::string host;
@@ -733,8 +1137,8 @@ void CoalescedComms::PrintCensus() {
               "min_KiB", "max_KiB");
   for (const auto &[k, t] : tots) {
     std::printf("%6d %-20s | %8d %10.1f %8d | %8d %10.1f %8d | %10.2f %10.2f\n", k.first,
-                btype_name(k.second), t.nmsg[0], t.kib[0], t.nbuf[0], t.nmsg[1],
-                t.kib[1], t.nbuf[1], t.min_kib, t.max_kib);
+                btype_name(k.second), t.nmsg[0], t.kib[0], t.nbuf[0], t.nmsg[1], t.kib[1],
+                t.nbuf[1], t.min_kib, t.max_kib);
   }
 
   // Histogram of message sizes in power of two KiB buckets
@@ -754,8 +1158,8 @@ void CoalescedComms::PrintCensus() {
     std::printf("%12.0f %8d %8d\n", std::pow(2.0, b), h[0], h[1]);
 
   if (comms_trace::CensusPrintMessages()) {
-    std::printf("\n%6s %6s %4s %-20s %4s %6s %6s %10s\n", "src", "dst", "node",
-                "btype", "lane", "ptag", "nbuf", "KiB");
+    std::printf("\n%6s %6s %4s %-20s %4s %6s %6s %10s\n", "src", "dst", "node", "btype",
+                "lane", "ptag", "nbuf", "KiB");
     for (int m = 0; m < nmsg; ++m) {
       const int *r = row(m);
       std::printf("%6d %6d %4s %-20s %4d %6d %6d %10.2f\n", r[0], r[1],
@@ -783,42 +1187,41 @@ void CoalescedComms::PrintCensus() {
 }
 
 //----------------------------------------------------------------------------------------
-bool CoalescedComms::IsAvailableForWrite(MeshData<Real> *pmd, BoundaryType b_type) {
+bool CoalescedComms::IsAvailableForWrite(MeshData<Real> *pmd, BoundaryType b_type,
+                                         int provider_lane) {
   const int lane = pmd->GetCommLane(b_type);
   bool available{true};
-  for (int rank = 0; rank < Globals::nranks; ++rank) {
-    const rank_key_t key{rank, b_type, lane};
-    if (coalesced_send_buffers.count(key)) {
-      available = available && coalesced_send_buffers.at(key).IsAvailableForWrite(pmd);
-    }
-  }
+  for (auto it = EntriesBegin(coalesced_send_buffers, b_type, lane, provider_lane);
+       InEntries(it, coalesced_send_buffers.end(), b_type, lane, provider_lane); ++it)
+    available = available && it->second.IsAvailableForWrite(pmd);
   return available;
 }
 
 //----------------------------------------------------------------------------------------
-void CoalescedComms::PackAndSend(MeshData<Real> *pmd, BoundaryType b_type) {
+void CoalescedComms::PackAndSend(MeshData<Real> *pmd, BoundaryType b_type,
+                                 int provider_lane) {
   const int lane = pmd->GetCommLane(b_type);
-  for (int rank = 0; rank < Globals::nranks; ++rank) {
-    const rank_key_t key{rank, b_type, lane};
-    if (coalesced_send_buffers.count(key)) {
-      coalesced_send_buffers.at(key).PackAndSend(pmd);
-    }
-  }
+  for (auto it = EntriesBegin(coalesced_send_buffers, b_type, lane, provider_lane);
+       InEntries(it, coalesced_send_buffers.end(), b_type, lane, provider_lane); ++it)
+    it->second.PackAndSend(pmd);
 }
 
 //----------------------------------------------------------------------------------------
-bool CoalescedComms::TryReceiveAny(MeshData<Real> *pmd, BoundaryType b_type) {
+bool CoalescedComms::TryReceiveAny(MeshData<Real> *pmd, BoundaryType b_type,
+                                   int provider_lane) {
 #ifdef MPI_PARALLEL
   const int lane = pmd->GetCommLane(b_type);
   bool all_received = true;
-  for (int rank = 0; rank < Globals::nranks; ++rank) {
-    const rank_key_t key{rank, b_type, lane};
-    if (coalesced_recv_buffers.count(key)) {
-      auto &coal_bufs = coalesced_recv_buffers.at(key);
-      for (auto &[partition_tag, coal_buf] : coal_bufs.coalesced_bufs) {
-        bool received = coal_buf.TryReceiveAndUnpack();
-        all_received = all_received && received;
-      }
+  for (auto it = EntriesBegin(coalesced_recv_buffers, b_type, lane, provider_lane);
+       InEntries(it, coalesced_recv_buffers.end(), b_type, lane, provider_lane); ++it) {
+    auto &coal_bufs = it->second;
+    if (coal_bufs.OnProviderLane()) {
+      all_received = coal_bufs.TryReceiveLane() && all_received;
+      continue;
+    }
+    for (auto &[partition_tag, coal_buf] : coal_bufs.coalesced_bufs) {
+      bool received = coal_buf.TryReceiveAndUnpack();
+      all_received = all_received && received;
     }
   }
   return all_received;

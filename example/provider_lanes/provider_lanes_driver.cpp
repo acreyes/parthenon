@@ -12,6 +12,7 @@
 //========================================================================================
 // This file was made in part with generative AI.
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include <bvals/comms/bnd_info.hpp>
+#include <bvals/comms/coalesced_buffers.hpp>
 #include <parthenon/driver.hpp>
 
 #include "provider_lanes.hpp"
@@ -65,21 +67,41 @@ class ProviderLanesDriver : public Driver {
     const bool rebuild = pinput->GetOrAddBoolean("provider_lanes", "rebuild", true);
     // full_rebuild = true rebuilds the whole groups lane instead of what changed
     const bool full = pinput->GetOrAddBoolean("provider_lanes", "full_rebuild", false);
+    // Number of graph changes, each with its RebuildLane, before the next exchange
+    const int nrebuilds = pinput->GetOrAddInteger("provider_lanes", "rebuilds", 1);
+    const bool coalesced = pmesh->do_coalesced_comms;
+    // pair_change = true: on every other cycle after the first, the rows capacity of one
+    // pair of group neighbors on two ranks grows, and only that pair's lane info is sent
+    const bool pair_change =
+        pinput->GetOrAddBoolean("provider_lanes", "pair_change", false);
+    const auto pair = OffRankPair();
     int capacity = provider_lanes::GetCapacity(pmesh);
+    int bump = 0;
     for (int cycle = 0; cycle < ncycles; ++cycle) {
       const CacheInits before = CountCacheInits();
+      const auto infos_before = CountLaneInfos();
+      // The pair's buffers change only while the two blocks are group neighbors
+      const bool bumped = pair_change && pair[0] >= 0 && cycle % 2 == 1 &&
+                          cycle != rebuild_cycle && GroupNeighbors(pair[0], pair[1]);
+      const bool rebuilt = (cycle == rebuild_cycle && rebuild) || bumped;
+      if (bumped) {
+        provider_lanes::SetBump(pmesh, pair[0], pair[1], ++bump);
+        pmesh->RebuildLane(kGroups, full);
+      }
       if (cycle == rebuild_cycle) {
-        // Every rank changes the graph the same way and rebuilds the lane between
-        // exchanges (no lane message in flight)
-        *graph_ = LaneGraph(pmesh->nbtotal, graph_->version + 1);
-        // The rows payload may now need more room: raise the capacity (BufferSize) and
-        // reallocate the lane's buffers with RebuildLane
-        if (rebuild) {
-          capacity += 3;
-          provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
-          pmesh->RebuildLane(kGroups, full);
-          // The ring lane did not change: its rebuild keeps its buffers and caches
-          pmesh->RebuildLane(kRing);
+        for (int r = 0; r < nrebuilds; ++r) {
+          // Every rank changes the graph the same way and rebuilds the lane between
+          // exchanges (no lane message in flight)
+          *graph_ = LaneGraph(pmesh->nbtotal, graph_->version + 1);
+          // The rows payload may now need more room: raise the capacity (BufferSize)
+          // and reallocate the lane's buffers with RebuildLane
+          if (rebuild) {
+            capacity += 3;
+            provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
+            pmesh->RebuildLane(kGroups, full);
+            // The ring lane did not change: its rebuild keeps its buffers and caches
+            pmesh->RebuildLane(kRing);
+          }
         }
       }
       provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
@@ -88,11 +110,23 @@ class ProviderLanesDriver : public Driver {
       const CacheInits after = CountCacheInits();
       // After cycle 0 only RebuildLane(kGroups) re-initializes caches, and only the
       // groups lane's (send and receive of the record and flux exchanges)
+      // (a pair change re-initializes only the caches on the pair's two ranks)
       const std::int64_t expected_groups =
           cycle == rebuild_cycle && rebuild ? 4 * after.partitions : 0;
-      const int cache_errors =
-          cycle > 0 && (after.groups - before.groups != expected_groups ||
-                        after.ring != before.ring || after.ghosts != before.ghosts);
+      const std::int64_t dgroups = after.groups - before.groups;
+      const bool groups_ok = bumped ? dgroups > 0 && dgroups <= 4 * after.partitions
+                                    : dgroups == expected_groups;
+      const int cache_errors = cycle > 0 && (!groups_ok || after.ring != before.ring ||
+                                             after.ghosts != before.ghosts);
+      // With coalesced comms only a rebuild that changed the groups lane sends lane
+      // infos, and only the groups lane's
+      const auto infos_after = CountLaneInfos();
+      const std::int64_t infos_groups = infos_after[0] - infos_before[0];
+      const std::int64_t infos_ring = infos_after[1] - infos_before[1];
+      const bool multirank = parthenon::Globals::nranks > 1;
+      const int info_errors =
+          coalesced && (infos_ring != 0 || (rebuilt && multirank) != (infos_groups > 0) ||
+                        (bumped && infos_groups != 2));
       if (parthenon::Globals::my_rank == 0) {
         std::cout << "provider_lanes: cycle " << cycle << ", graph version "
                   << graph_->version << ", groups of size";
@@ -103,10 +137,13 @@ class ProviderLanesDriver : public Driver {
                   << res.rows_sent << " of " << res.rows_capacity << " sent"
                   << "; cache inits groups +" << after.groups - before.groups << " ring +"
                   << after.ring - before.ring << " ghosts +"
-                  << after.ghosts - before.ghosts << (cache_errors ? " WRONG" : "")
-                  << std::endl;
+                  << after.ghosts - before.ghosts << (cache_errors ? " WRONG" : "");
+        if (coalesced)
+          std::cout << "; lane infos groups +" << infos_groups << " ring +" << infos_ring
+                    << (info_errors ? " WRONG" : "");
+        std::cout << std::endl;
       }
-      nwrong += res.nwrong + cache_errors;
+      nwrong += res.nwrong + cache_errors + info_errors;
     }
     return nwrong == 0 ? DriverStatus::complete : DriverStatus::failed;
   }
@@ -130,6 +167,43 @@ class ProviderLanesDriver : public Driver {
       parthenon::AddBoundaryExchangeTasks(set, tl, md, pmesh->multilevel);
     }
     tc.Execute();
+  }
+
+  // A pair of blocks on two ranks that are group neighbors in layer 0 ({-1, -1} if none)
+  std::array<int, 2> OffRankPair() const {
+    // Rank of every gid (local gids are contiguous)
+    std::vector<int> rank(pmesh->nbtotal, parthenon::Globals::my_rank);
+#ifdef MPI_PARALLEL
+    std::vector<int> mine(pmesh->nbtotal, -1);
+    for (const auto &pmb : pmesh->block_list)
+      mine[pmb->gid] = parthenon::Globals::my_rank;
+    MPI_Allreduce(mine.data(), rank.data(), pmesh->nbtotal, MPI_INT, MPI_MAX,
+                  MPI_COMM_WORLD);
+#endif
+    for (const auto &g : graph_->members[0])
+      for (int a : g)
+        for (int b : g)
+          if (rank[a] != rank[b]) return {a, b};
+    return {-1, -1};
+  }
+  bool GroupNeighbors(int a, int b) const {
+    for (int layer = 0; layer < provider_lanes::kLayers; ++layer)
+      if (graph_->group[layer][a] == graph_->group[layer][b]) return true;
+    return false;
+  }
+
+  // Lane info messages sent by all ranks, groups and ring lanes
+  std::array<std::int64_t, 2> CountLaneInfos() {
+    auto &sent = pmesh->pcoalesced_comms->lane_infos_sent;
+    std::array<std::int64_t, 2> n{0, 0};
+    for (int l = 0; l < 2; ++l) {
+      auto it = sent.find(l == 0 ? static_cast<int>(kGroups) : static_cast<int>(kRing));
+      if (it != sent.end()) n[l] = it->second;
+    }
+#ifdef MPI_PARALLEL
+    MPI_Allreduce(MPI_IN_PLACE, n.data(), 2, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    return n;
   }
 
   CacheInits CountCacheInits() {

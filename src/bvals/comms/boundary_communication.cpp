@@ -252,8 +252,8 @@ void ApplyBoundaryOps(MeshData<Real> *md, BvarsSubCache_t *pcache, bool send) {
         const auto i = subset_h(b);
         const int capacity = cache.bnd_info_h(i).buf.size();
         PARTHENON_REQUIRE_THROWS(
-            ops.payload_h(i) >= 1 && ops.payload_h(i) <= capacity,
-            "Boundary pack op payload must be in [1, buffer size]; to send more, "
+            ops.payload_h(i) >= 0 && ops.payload_h(i) <= capacity,
+            "Boundary pack op payload must be in [0, buffer size]; to send more, "
             "allocate larger buffers (lane BufferSize + RebuildLane).");
       }
     }
@@ -299,7 +299,7 @@ TaskStatus SendBoundBufsImpl(std::shared_ptr<MeshData<Real>> &md, bool do_restri
   bool can_write_combined{true};
   if (pmesh->do_coalesced_comms)
     can_write_combined =
-        pmesh->pcoalesced_comms->IsAvailableForWrite(md.get(), bound_type);
+        pmesh->pcoalesced_comms->IsAvailableForWrite(md.get(), bound_type, lane);
 
   if (other_communication_unfinished || !can_write_combined) {
     return TaskStatus::incomplete;
@@ -382,7 +382,7 @@ TaskStatus SendBoundBufsImpl(std::shared_ptr<MeshData<Real>> &md, bool do_restri
     }
   }
   if (pmesh->do_coalesced_comms)
-    pmesh->pcoalesced_comms->PackAndSend(md.get(), bound_type);
+    pmesh->pcoalesced_comms->PackAndSend(md.get(), bound_type, lane);
 
   return TaskStatus::complete;
 }
@@ -465,19 +465,25 @@ TaskStatus ReceiveBoundBufsImpl(std::shared_ptr<MeshData<Real>> &md, int lane) {
 
   const bool coal_comm = pmesh->do_coalesced_comms;
   // Unpacks every coalesced message that has arrived, including ones for other
-  // MeshData, so its result does not say whether md's buffers are in. The loop below does.
-  if (coal_comm) pmesh->pcoalesced_comms->TryReceiveAny(md.get(), bound_type);
+  // MeshData, so its result does not say whether md's buffers are in. The loop below
+  // does.
+  if (coal_comm) pmesh->pcoalesced_comms->TryReceiveAny(md.get(), bound_type, lane);
   bool all_received = true;
   std::for_each(std::begin(cache.buf_vec), std::end(cache.buf_vec),
                 [&all_received, coal_comm](auto pbuf) {
-                  all_received = pbuf->TryReceive(coal_comm) && all_received;
+                  const bool received = pbuf->TryReceive(coal_comm);
+                  // On provider lanes a payload of 0 is an empty message, not a null
+                  if constexpr (IsLaneBoundary(bound_type)) {
+                    if (received) pbuf->SetNullReceivedEmpty();
+                  }
+                  all_received = received && all_received;
                 });
   // Some MPI implementations only progress rendezvous sends while the sending rank is
   // inside MPI, so if we leave the exchange with sends in flight the receiving rank
   // can be stalled until we next call MPI
   if (coal_comm && all_received && pmesh->coalesced_wait_for_sends)
     all_received = pmesh->pcoalesced_comms->IsAvailableForWrite(
-        md.get(), GetAssociatedSender(bound_type));
+        md.get(), GetAssociatedSender(bound_type), lane);
 
   int ibound = 0;
   if (Globals::sparse_config.enabled && all_received) {
@@ -744,8 +750,6 @@ namespace {
 // tasks of several lanes on one MeshData only look them up
 void PrepareLaneMeshData(std::shared_ptr<MeshData<Real>> &md, LaneId lane,
                          BoundaryType send_type, BoundaryType recv_type) {
-  PARTHENON_REQUIRE(!md->GetMeshPointer()->do_coalesced_comms,
-                    "Provider lanes do not support coalesced comms.");
   PARTHENON_REQUIRE(static_cast<int>(lane) >= 0, "Lane ids are non-negative.");
   auto &bvars = md->GetBvarsCache();
   bvars.GetLaneSubCache(send_type, true, static_cast<int>(lane));

@@ -693,5 +693,34 @@ Some notes:
   buffer if necessary, and then actually post the `Irecv`. FWIW, this prevents pre-posting
   the `Irecv`.
 
+Coalesced lanes
+~~~~~~~~~~~~~~~
+
+Provider lanes (``Mesh::RegisterNeighborProvider``) coalesce as well. Their coalesced buffers
+are keyed by (``BoundaryType``, comm lane, provider lane, rank), use their own MPI
+communicators (``BoundaryType::lane`` and ``BoundaryType::lane_flxcor_send``, created only when
+``do_coalesced_comms`` is on) and include the provider lane in the data and status tags. Lane
+ids must be below ``kMaxCoalescedProviderLanes``. Differences from the geometric path:
+
+- **Payload lengths.** The status message starts with an epoch (see below), and each buffer's
+  entry is its payload length: the length a variable-length pack op reported, otherwise the
+  buffer size. A length of 0 is an empty buffer; the receive buffer keeps its storage and the
+  unpack op sees a payload of 0. Without coalescing, a pack op may also report 0, which sends a
+  zero-length message with the same meaning.
+- **No handshake on lane rebuilds.** ``Mesh::RebuildLane`` (and the global build) calls
+  ``CoalescedComms::SyncProviderLane``, which refills the lane's coalesced layouts in place
+  (the combined buffers are kept, so they only grow) and sends a lane info message, numbered
+  by a per-rank-pair epoch, only to the ranks whose layout changed. The receiver does not wait
+  in ``RebuildLane``: its next receive on the lane reads the epoch from the status message and
+  applies the matching lane info (receiving it then if it has not arrived). Several rebuilds
+  before one exchange are fine; superseded infos are skipped. A layout that does not match the
+  receiver's own buffers (an asymmetric lane graph, or ``RebuildLane`` missing on one rank) is
+  a hard error.
+- **Tags of individual lane buffers are unused**, so an incremental ``RebuildLane`` does not
+  rebuild the buffers of every channel to a rank whose lane tags changed.
+
+The ``provider_lanes`` regression test runs the example with coalescing off and on at 1 to 4
+ranks and requires bitwise identical results, and counts the lane info messages.
+
 .. note::
     This file was made in part with generative AI. 

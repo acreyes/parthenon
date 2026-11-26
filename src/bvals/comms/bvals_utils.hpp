@@ -406,8 +406,9 @@ inline void RebuildBufferCache(std::shared_ptr<MeshData<Real>> md, int nbound,
   if constexpr (!on_lane) cache.prores_cache.CopyToDevice();
   BuildBndOpsCache(&cache.bnd_ops, op_keys, default_bufs, nfuncs, nbound);
   cache.bnd_ops.variable_length = variable_length;
-  PARTHENON_REQUIRE_THROWS(!variable_length || !pmesh->do_coalesced_comms,
-                           "Variable-length boundary ops need coalesced comms off");
+  PARTHENON_REQUIRE_THROWS(!variable_length || on_lane || !pmesh->do_coalesced_comms,
+                           "Variable-length boundary ops off provider lanes need "
+                           "coalesced comms off");
 }
 
 } // namespace parthenon
