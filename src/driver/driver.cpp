@@ -148,8 +148,10 @@ DriverStatus EvolutionDriver::Execute() {
 
   { // Main t < tmax loop region
     PARTHENON_INSTRUMENT
+    OutputSignal pending_signal = OutputSignal::none;
     while (tm.KeepGoing() && signal != OutputSignal::analysis) {
-      if (Globals::my_rank == 0) OutputCycleDiagnostics();
+      // with a pending dt reduction the diagnostics print once it completes
+      if (Globals::my_rank == 0 && !dt_pending_) OutputCycleDiagnostics();
 
       // poke the dog
       if (Globals::watchdog_enabled) {
@@ -174,6 +176,9 @@ DriverStatus EvolutionDriver::Execute() {
           }
         }
       }
+
+      // the signal reduced with dt is acted on at the end of this cycle
+      if (dt_pending_) pending_signal = FinishGlobalTimeStep(true);
 
       comms_trace::BeginStep(tm.ncycle);
       TaskListStatus status = Step();
@@ -209,11 +214,18 @@ DriverStatus EvolutionDriver::Execute() {
       }
       if (pmesh->modified) InitializeBlockTimeSteps();
       time_LBandAMR += timer_LBandAMR.seconds();
+      start_dt_reduction_ = nonblocking_dt_;
       SetGlobalTimeStep();
+      start_dt_reduction_ = false;
       comms_trace::EndStep();
 
       // check for signals
-      signal = SignalHandler::CheckSignalFlags();
+      if (dt_pending_) {
+        signal = pending_signal;
+        pending_signal = OutputSignal::none;
+      } else {
+        signal = SignalHandler::CheckSignalFlags();
+      }
 
       if (signal == OutputSignal::final) {
         break;
@@ -222,6 +234,12 @@ DriverStatus EvolutionDriver::Execute() {
       // skip the final (last) output at the end of the simulation time as it happens
       // later
       if (!output_before_amr && tm.KeepGoing()) {
+        // an output records dt: the pending reduction completes first
+        if (dt_pending_ && pouts->AnyDue(&tm, signal)) {
+          const auto reduced = FinishGlobalTimeStep();
+          if (reduced == OutputSignal::final) break;
+          if (reduced == OutputSignal::now) signal = reduced;
+        }
         pouts->MakeOutputs(pmesh, pinput, &tm, signal);
       }
 
@@ -233,6 +251,7 @@ DriverStatus EvolutionDriver::Execute() {
       // ======================================================
   } // Main t < tmax loop region
 
+  FinishGlobalTimeStep();
   if (pmesh->UserWorkAfterLoop != nullptr) {
     pmesh->UserWorkAfterLoop(pmesh, pinput, tm);
   }
@@ -292,6 +311,8 @@ void EvolutionDriver::InitializeBlockTimeSteps() {
 // \brief function that loops over all MeshBlocks and find new timestep
 
 void EvolutionDriver::SetGlobalTimeStep() {
+  const bool reduce =
+      !(dt_force > 0.0) && !((tm.ncycle == 0) && dt_init_force && (dt_init > 0.0));
   if (dt_force > 0.0) {
     // Check if user wants to force the value
     tm.dt = dt_force;
@@ -315,14 +336,65 @@ void EvolutionDriver::SetGlobalTimeStep() {
     }
     // Force timestep to be in the allowable range
     tm.dt = std::max(dt_floor, std::min(tm.dt, dt_ceil));
+  }
 #ifdef MPI_PARALLEL
+  if (start_dt_reduction_) {
+    // dt and the signal flags (max as min of the negated flags) in one reduction
+    constexpr int nflags = SignalHandler::nsignal + 1;
+    int flags[nflags];
+    SignalHandler::LocalSignalFlags(flags);
+    dt_buffer_.resize(nflags + 1);
+    dt_buffer_[0] = tm.dt;
+    for (int n = 0; n < nflags; n++) {
+      dt_buffer_[n + 1] = -static_cast<Real>(flags[n]);
+    }
+    PARTHENON_MPI_CHECK(MPI_Iallreduce(MPI_IN_PLACE, dt_buffer_.data(), nflags + 1,
+                                       MPI_PARTHENON_REAL, MPI_MIN, MPI_COMM_WORLD,
+                                       &dt_request_));
+    dt_pending_ = true;
+    dt_tlim_ = tm.tlim;
+    return;
+  }
+  if (reduce) {
     const double t_allreduce = comms_trace::Now();
     PARTHENON_MPI_CHECK(MPI_Allreduce(MPI_IN_PLACE, &tm.dt, 1, MPI_PARTHENON_REAL,
                                       MPI_MIN, MPI_COMM_WORLD));
     comms_trace::AddAllreduceTime(comms_trace::Now() - t_allreduce);
-#endif
   }
+#endif
+  LimitTimeStep();
+}
 
+SignalHandler::OutputSignal EvolutionDriver::FinishGlobalTimeStep(bool after_prestep) {
+  auto signal = SignalHandler::OutputSignal::none;
+  if (!dt_pending_) return signal;
+  const Real prestep_dt = tm.dt;
+#ifdef MPI_PARALLEL
+  const double t_wait = comms_trace::Now();
+  PARTHENON_MPI_CHECK(MPI_Wait(&dt_request_, MPI_STATUS_IGNORE));
+  comms_trace::AddAllreduceTime(comms_trace::Now() - t_wait);
+  constexpr int nflags = SignalHandler::nsignal + 1;
+  int flags[nflags];
+  for (int n = 0; n < nflags; n++) {
+    flags[n] = static_cast<int>(-dt_buffer_[n + 1]);
+  }
+  signal = SignalHandler::ApplySignalFlags(flags);
+  tm.dt = dt_buffer_[0];
+#endif
+  dt_pending_ = false;
+  // the limits as at the end of the cycle that started the reduction
+  const Real tlim = tm.tlim;
+  tm.tlim = dt_tlim_;
+  LimitTimeStep();
+  tm.tlim = tlim;
+  if (after_prestep) {
+    if (Globals::my_rank == 0) OutputCycleDiagnostics();
+    if (prestep_sets_dt_) tm.dt = prestep_dt;
+  }
+  return signal;
+}
+
+void EvolutionDriver::LimitTimeStep() {
   // Check that we have not gone off the rails
   if (tm.dt <= dt_min) {
     if (++dt_min_count >= dt_min_count_max) {

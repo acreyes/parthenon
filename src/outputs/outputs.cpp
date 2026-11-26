@@ -542,6 +542,46 @@ Outputs::Outputs(Mesh *pm, ParameterInput *pin, ApplicationInput *papp_in, SimTi
 }
 
 //----------------------------------------------------------------------------------------
+namespace {
+bool OutputDue(const OutputType *ptype, const SimTime *tm,
+               const SignalHandler::OutputSignal signal) {
+  const bool times_trigger =
+      tm != nullptr &&
+      ptype->output_params.current_time_index < ptype->output_params.times.size() &&
+      tm->time >= ptype->output_params.times[ptype->output_params.current_time_index];
+
+  return (tm == nullptr) ||
+         // output is not soft disabled and
+         (((ptype->output_params.dt >= 0.0) || (ptype->output_params.dn >= 0) ||
+           ptype->output_params.times.size() > 0) &&
+          // either dump initial data
+          ((tm->ncycle == 0) ||
+           //  or by triggering time or cycle based conditions
+           ((ptype->output_params.dt >= 0.0) &&
+            ((tm->time >= ptype->output_params.next_time) ||
+             (tm->tlim > 0.0 && tm->time >= tm->tlim))) ||
+           ((ptype->output_params.dn >= 0) &&
+            ((tm->ncycle >= ptype->output_params.next_n) ||
+             (tm->nlim > 0 && tm->ncycle >= tm->nlim))) ||
+           // JJ: add times_triger for specific times output
+           times_trigger ||
+           // or by manual triggers
+           (signal == SignalHandler::OutputSignal::now) ||
+           (signal == SignalHandler::OutputSignal::final &&
+            ptype->output_params.include_in_final) ||
+           (signal == SignalHandler::OutputSignal::analysis &&
+            ptype->output_params.analysis_flag)));
+}
+} // namespace
+
+bool Outputs::AnyDue(const SimTime *tm, const SignalHandler::OutputSignal signal) const {
+  for (auto ptype : output_types_) {
+    if (OutputDue(ptype.get(), tm, signal)) return true;
+  }
+  return false;
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void Outputs::MakeOutputs(Mesh *pm, ParameterInput *pin, bool wtflag)
 //  \brief scans through singly linked list of OutputTypes and makes any outputs needed.
 
@@ -550,32 +590,7 @@ void Outputs::MakeOutputs(Mesh *pm, ParameterInput *pin, SimTime *tm,
   PARTHENON_INSTRUMENT
   bool first = true;
   for (auto ptype : output_types_) {
-    const bool times_trigger =
-        tm != nullptr &&
-        ptype->output_params.current_time_index < ptype->output_params.times.size() &&
-        tm->time >= ptype->output_params.times[ptype->output_params.current_time_index];
-
-    if ((tm == nullptr) ||
-        // output is not soft disabled and
-        (((ptype->output_params.dt >= 0.0) || (ptype->output_params.dn >= 0) ||
-          ptype->output_params.times.size() > 0) &&
-         // either dump initial data
-         ((tm->ncycle == 0) ||
-          //  or by triggering time or cycle based conditions
-          ((ptype->output_params.dt >= 0.0) &&
-           ((tm->time >= ptype->output_params.next_time) ||
-            (tm->tlim > 0.0 && tm->time >= tm->tlim))) ||
-          ((ptype->output_params.dn >= 0) &&
-           ((tm->ncycle >= ptype->output_params.next_n) ||
-            (tm->nlim > 0 && tm->ncycle >= tm->nlim))) ||
-          // JJ: add times_triger for specific times output
-          times_trigger ||
-          // or by manual triggers
-          (signal == SignalHandler::OutputSignal::now) ||
-          (signal == SignalHandler::OutputSignal::final &&
-           ptype->output_params.include_in_final) ||
-          (signal == SignalHandler::OutputSignal::analysis &&
-           ptype->output_params.analysis_flag)))) {
+    if (OutputDue(ptype.get(), tm, signal)) {
       if (first && ptype->output_params.file_type != "hst") {
         pm->ApplyUserWorkBeforeOutput(pm, pin, *tm);
         for (const auto &pkg : pm->packages.AllPackages()) {

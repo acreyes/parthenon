@@ -22,6 +22,7 @@
 #include <unistd.h> // alarm() Unix OS utility; not in C standard --> no <cunistd>
 
 // first 2x macros and signal() are the only ISO C features; rest are POSIX C extensions
+#include <algorithm>
 #include <csignal>
 #include <iostream>
 
@@ -63,6 +64,23 @@ void SignalHandlerInit() {
 //  \brief Synchronize and check signal flags and return true if any of them is caught
 
 OutputSignal CheckSignalFlags() {
+  int flags[nsignal + 1];
+  sigprocmask(SIG_BLOCK, &mask, nullptr);
+  LocalSignalFlags(flags);
+#ifdef MPI_PARALLEL
+  PARTHENON_MPI_CHECK(
+      MPI_Allreduce(MPI_IN_PLACE, flags, nsignal + 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
+#endif
+  sigprocmask(SIG_UNBLOCK, &mask, nullptr);
+  return ApplySignalFlags(flags);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void LocalSignalFlags(int *flags)
+//  \brief Copies this rank's nsignal + 1 flags for a max reduction (rank 0 first checks
+//  the trigger files)
+
+void LocalSignalFlags(int *flags) {
   if (Globals::my_rank == 0) {
     // A signal file output_now in Parthenon's dir triggers output (custom "signal"),
     // a file stop_now acts like a single SIGTERM
@@ -72,22 +90,31 @@ OutputSignal CheckSignalFlags() {
       signalflag[nsignal] = 1;
     }
   }
+  for (int n = 0; n < nsignal + 1; n++) {
+    flags[n] = signalflag[n];
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn OutputSignal ApplySignalFlags(const int *flags)
+//  \brief Takes the flags reduced (max) over ranks and returns their signal; a signal
+//  caught after LocalSignalFlags stays set for the next reduction
+
+OutputSignal ApplySignalFlags(const int *flags) {
   // Currently, only checking for nonzero return code at the end of each timestep in
   // main.cpp; i.e. if an issue prevents a process from reaching the end of a cycle, the
   // signals will never be handled by that process / the solver may hang
   sigprocmask(SIG_BLOCK, &mask, nullptr);
-#ifdef MPI_PARALLEL
-  PARTHENON_MPI_CHECK(MPI_Allreduce(
-      MPI_IN_PLACE, const_cast<void *>(reinterpret_cast<volatile void *>(signalflag)),
-      nsignal + 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD));
-#endif
+  for (int n = 0; n < nsignal + 1; n++) {
+    signalflag[n] = std::max(static_cast<int>(signalflag[n]), flags[n]);
+  }
   sigprocmask(SIG_UNBLOCK, &mask, nullptr);
   for (int n = 0; n < nsignal; n++) {
-    if (signalflag[n] != 0) {
+    if (flags[n] != 0) {
       return OutputSignal::final;
     }
   }
-  if (signalflag[nsignal] != 0) {
+  if (flags[nsignal] != 0) {
     // reset signalflag and cleanup trigger file
     signalflag[nsignal] = 0;
     if (Globals::my_rank == 0) {

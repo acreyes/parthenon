@@ -296,6 +296,8 @@ class Outputs {
   void
   MakeOutputs(Mesh *pm, ParameterInput *pin, SimTime *tm = nullptr,
               SignalHandler::OutputSignal signal = SignalHandler::OutputSignal::none);
+  // True if MakeOutputs with these arguments would write any output.
+  bool AnyDue(const SimTime *tm, SignalHandler::OutputSignal signal) const;
 
  private:
   std::vector<std::shared_ptr<OutputType>> output_types_;

@@ -27,6 +27,7 @@
 #include "mesh/mesh.hpp"
 #include "outputs/outputs.hpp"
 #include "parameter_input.hpp"
+#include "parthenon_mpi.hpp"
 #include "tasks/tasks.hpp"
 
 namespace parthenon {
@@ -137,9 +138,19 @@ class EvolutionDriver : public Driver {
         "decreased to parthenon/mesh/comm_buffer_reset_fraction times the total number "
         "of allocated buffers. If set to a non-positive number, the buffer "
         "pool is never cleared.");
+    nonblocking_dt_ = pin->GetOrAddBoolean(
+        "parthenon/time", "nonblocking_dt", false,
+        "Reduce the time step and the signal flags at the end of a cycle with one "
+        "MPI_Iallreduce, completed before the next Step() (or before an output that is "
+        "due). The pre-step user work then sees this rank's dt estimate, and a signal "
+        "is acted on one cycle later.");
   }
   DriverStatus Execute() override;
   virtual void SetGlobalTimeStep();
+  // Completes a dt reduction started by SetGlobalTimeStep (nonblocking_dt; no-op if none
+  // is pending) and returns the signal reduced with it. After the pre-step it also
+  // prints the cycle diagnostics, and with prestep_sets_dt_ keeps the pre-step's dt.
+  SignalHandler::OutputSignal FinishGlobalTimeStep(bool after_prestep = false);
   virtual void OutputCycleDiagnostics();
   virtual void OutputDownstreamCycleDiagnostics() { return; }
 
@@ -155,9 +166,20 @@ class EvolutionDriver : public Driver {
   int dt_min_count_max, dt_max_count_max;
   std::int64_t buffer_reset_cadence_;
   bool output_before_amr;
+  bool nonblocking_dt_ = false;
+  // set by an application whose pre-step user work sets tm.dt itself
+  bool prestep_sets_dt_ = false;
+  bool dt_pending_ = false;
 
  private:
   void InitializeBlockTimeSteps();
+  void LimitTimeStep();
+  bool start_dt_reduction_ = false;
+#ifdef MPI_PARALLEL
+  MPI_Request dt_request_ = MPI_REQUEST_NULL;
+#endif
+  std::vector<Real> dt_buffer_;
+  Real dt_tlim_ = 0.0;
 };
 
 namespace DriverUtils {

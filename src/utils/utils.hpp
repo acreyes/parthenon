@@ -107,6 +107,8 @@ constexpr int SIGNAL_REPEAT_THROW = 3;
 static sigset_t mask;
 void SignalHandlerInit();
 OutputSignal CheckSignalFlags();
+void LocalSignalFlags(int *flags);
+OutputSignal ApplySignalFlags(const int *flags);
 int GetSignalFlag(int s);
 void SetSignalFlag(int s);
 void SetWallTimeAlarm(int t);
