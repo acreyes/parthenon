@@ -54,6 +54,8 @@ struct LaneGraph {
   std::vector<int> ring, pos;
 
   static int Channel(int layer, int gid) { return (layer + gid) % kLayers; }
+  // Takes the listed blocks out of their groups (each becomes a group of its own)
+  void Isolate(const std::vector<bool> &out);
   void GroupNeighbors(int gid, std::vector<parthenon::LaneNeighbor> &out) const;
   void RingNeighbors(int gid, std::vector<parthenon::LaneNeighbor> &out) const;
 };
@@ -101,8 +103,10 @@ struct SumByChannel {
 // RebuildLane); the unpack op sums, per receiving channel, the rows and their number.
 // With rows_min = 0 some payloads are empty; with rows_vary the capacity of a pair of
 // blocks a, b is capacity + (a + b) % 3. The pair (bump_a, bump_b) has bump more.
+// With rows_fixed every payload is rows_min rows, whatever the capacity.
 KOKKOS_INLINE_FUNCTION int RowsLength(int send_gid, int send_channel, int cycle,
-                                      int capacity, int rows_min) {
+                                      int capacity, int rows_min, bool fixed) {
+  if (fixed) return rows_min;
   return rows_min +
          (5 * send_gid + 3 * send_channel + 2 * cycle) % (capacity + 1 - rows_min);
 }
@@ -167,8 +171,8 @@ struct CheckResult {
   std::int64_t rows_sent = 0, rows_capacity = 0;
 };
 // Checks the records, fluxes and u ghosts of every local block against the graph and
-// the geometric neighbors (global sums)
-CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle);
+// the geometric neighbors (global sums); groups = false skips the groups lane's values
+CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle, bool groups = true);
 
 } // namespace provider_lanes
 

@@ -74,7 +74,14 @@ class ProviderLanesDriver : public Driver {
     // pair of group neighbors on two ranks grows, and only that pair's lane info is sent
     const bool pair_change =
         pinput->GetOrAddBoolean("provider_lanes", "pair_change", false);
-    const auto pair = OffRankPair();
+    // idle_rank = r: in cycle 1 the other ranks take rank r's blocks out of the groups
+    // and rebuild the lane, while rank r keeps its graph, neither rebuilds nor exchanges
+    // the groups lane; in cycle 2 the other ranks go back to the graph and rebuild, and
+    // rank r, whose lane did not change, again does not rebuild. Ignored below r + 1 ranks.
+    int idle_rank = pinput->GetOrAddInteger("provider_lanes", "idle_rank", -1);
+    if (idle_rank >= parthenon::Globals::nranks) idle_rank = -1;
+    const auto rank_of = RankOfGid();
+    const auto pair = OffRankPair(rank_of);
     int capacity = provider_lanes::GetCapacity(pmesh);
     int bump = 0;
     for (int cycle = 0; cycle < ncycles; ++cycle) {
@@ -83,7 +90,20 @@ class ProviderLanesDriver : public Driver {
       // The pair's buffers change only while the two blocks are group neighbors
       const bool bumped = pair_change && pair[0] >= 0 && cycle % 2 == 1 &&
                           cycle != rebuild_cycle && GroupNeighbors(pair[0], pair[1]);
+      const bool idling = idle_rank >= 0 && (cycle == 1 || cycle == 2);
+      const bool idle = idling && cycle == 1 && parthenon::Globals::my_rank == idle_rank;
       const bool rebuilt = (cycle == rebuild_cycle && rebuild) || bumped;
+      if (idling) {
+        auto graph = LaneGraph(pmesh->nbtotal, graph_->version);
+        std::vector<bool> out(pmesh->nbtotal, false);
+        for (int gid = 0; gid < pmesh->nbtotal; ++gid)
+          out[gid] = cycle == 1 && rank_of[gid] == idle_rank;
+        graph.Isolate(out);
+        if (parthenon::Globals::my_rank != idle_rank) {
+          *graph_ = graph;
+          pmesh->RebuildLane(kGroups, full);
+        }
+      }
       if (bumped) {
         provider_lanes::SetBump(pmesh, pair[0], pair[1], ++bump);
         pmesh->RebuildLane(kGroups, full);
@@ -105,8 +125,8 @@ class ProviderLanesDriver : public Driver {
         }
       }
       provider_lanes::SetCycleAndCapacity(pmesh, cycle, capacity);
-      RunCycle(cycle);
-      const auto res = provider_lanes::Check(pmesh, *graph_, cycle);
+      RunCycle(cycle, !idle);
+      const auto res = provider_lanes::Check(pmesh, *graph_, cycle, !idle);
       const CacheInits after = CountCacheInits();
       // After cycle 0 only RebuildLane(kGroups) re-initializes caches, and only the
       // groups lane's (send and receive of the record and flux exchanges)
@@ -114,8 +134,9 @@ class ProviderLanesDriver : public Driver {
       const std::int64_t expected_groups =
           cycle == rebuild_cycle && rebuild ? 4 * after.partitions : 0;
       const std::int64_t dgroups = after.groups - before.groups;
-      const bool groups_ok = bumped ? dgroups > 0 && dgroups <= 4 * after.partitions
-                                    : dgroups == expected_groups;
+      const bool groups_ok = bumped || idling
+                                 ? dgroups > 0 && dgroups <= 4 * after.partitions
+                                 : dgroups == expected_groups;
       const int cache_errors = cycle > 0 && (!groups_ok || after.ring != before.ring ||
                                              after.ghosts != before.ghosts);
       // With coalesced comms only a rebuild that changed the groups lane sends lane
@@ -125,8 +146,9 @@ class ProviderLanesDriver : public Driver {
       const std::int64_t infos_ring = infos_after[1] - infos_before[1];
       const bool multirank = parthenon::Globals::nranks > 1;
       const int info_errors =
-          coalesced && (infos_ring != 0 || (rebuilt && multirank) != (infos_groups > 0) ||
-                        (bumped && infos_groups != 2));
+          coalesced &&
+          (infos_ring != 0 || (!idling && (rebuilt && multirank) != (infos_groups > 0)) ||
+           (bumped && infos_groups != 2));
       if (parthenon::Globals::my_rank == 0) {
         std::cout << "provider_lanes: cycle " << cycle << ", graph version "
                   << graph_->version << ", groups of size";
@@ -151,7 +173,8 @@ class ProviderLanesDriver : public Driver {
   int nwrong = 0;
 
  private:
-  void RunCycle(int cycle) {
+  // groups = false leaves out the groups lane's exchanges
+  void RunCycle(int cycle, bool groups) {
     TaskCollection tc;
     const int num_partitions = pmesh->DefaultNumPartitions();
     TaskRegion &region = tc.AddRegion(num_partitions);
@@ -161,17 +184,16 @@ class ProviderLanesDriver : public Driver {
       // its lane's variables, the ghost exchange only u
       auto &md = pmesh->mesh_data.GetOrAdd("base", i);
       auto set = tl.AddTask(TaskID(0), provider_lanes::SetValues, md.get(), cycle);
-      parthenon::AddLaneExchangeTasks(set, tl, md, kGroups);
+      if (groups) parthenon::AddLaneExchangeTasks(set, tl, md, kGroups);
       parthenon::AddLaneExchangeTasks(set, tl, md, kRing);
-      parthenon::AddLaneFluxCorrectionTasks(set, tl, md, kGroups);
+      if (groups) parthenon::AddLaneFluxCorrectionTasks(set, tl, md, kGroups);
       parthenon::AddBoundaryExchangeTasks(set, tl, md, pmesh->multilevel);
     }
     tc.Execute();
   }
 
-  // A pair of blocks on two ranks that are group neighbors in layer 0 ({-1, -1} if none)
-  std::array<int, 2> OffRankPair() const {
-    // Rank of every gid (local gids are contiguous)
+  // Rank of every gid
+  std::vector<int> RankOfGid() const {
     std::vector<int> rank(pmesh->nbtotal, parthenon::Globals::my_rank);
 #ifdef MPI_PARALLEL
     std::vector<int> mine(pmesh->nbtotal, -1);
@@ -180,6 +202,11 @@ class ProviderLanesDriver : public Driver {
     MPI_Allreduce(mine.data(), rank.data(), pmesh->nbtotal, MPI_INT, MPI_MAX,
                   MPI_COMM_WORLD);
 #endif
+    return rank;
+  }
+
+  // A pair of blocks on two ranks that are group neighbors in layer 0 ({-1, -1} if none)
+  std::array<int, 2> OffRankPair(const std::vector<int> &rank) const {
     for (const auto &g : graph_->members[0])
       for (int a : g)
         for (int b : g)

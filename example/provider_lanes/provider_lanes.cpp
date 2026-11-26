@@ -110,6 +110,26 @@ LaneGraph::LaneGraph(int nblocks, int version) : nblocks(nblocks), version(versi
     pos[ring[p]] = p;
 }
 
+void LaneGraph::Isolate(const std::vector<bool> &out) {
+  for (int layer = 0; layer < kLayers; ++layer) {
+    auto &mem = members[layer];
+    const std::size_t ngroups = mem.size();
+    for (std::size_t g = 0; g < ngroups; ++g) {
+      const std::vector<int> all = mem[g];
+      std::vector<int> kept;
+      for (int gid : all) {
+        if (!out[gid]) {
+          kept.push_back(gid);
+          continue;
+        }
+        group[layer][gid] = mem.size();
+        mem.push_back({gid});
+      }
+      mem[g] = kept;
+    }
+  }
+}
+
 void LaneGraph::GroupNeighbors(int gid, std::vector<parthenon::LaneNeighbor> &out) const {
   for (int layer = 0; layer < kLayers; ++layer)
     for (int m : members[layer][group[layer][gid]])
@@ -189,12 +209,13 @@ void RowsPack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
                     const parthenon::BndPayloadHost_t &payload_h) {
   const int cycle = GetParam(Package(md), "cycle");
   const int rows_min = GetParam(Package(md), "rows_min");
+  const bool fixed = Package(md)->Param<bool>("rows_fixed");
   int maxlen = 0;
   for (std::size_t n = 0; n < nbuffers; ++n) {
     const BndInfo &bi = info_h(idx_h(n));
     // payload_h holds the capacity (BufferSize) on entry
     payload_h(idx_h(n)) =
-        RowsLength(bi.send_gid, bi.channel, cycle, payload_h(idx_h(n)), rows_min);
+        RowsLength(bi.send_gid, bi.channel, cycle, payload_h(idx_h(n)), rows_min, fixed);
     maxlen = std::max(maxlen, payload_h(idx_h(n)));
   }
   if (maxlen == 0) return;
@@ -203,7 +224,7 @@ void RowsPack::Pack(MeshData<Real> *md, const parthenon::BndInfoArr_t &info,
       KOKKOS_LAMBDA(const int n, const int row) {
         const BndInfo &bi = info(idx(n));
         const int len = RowsLength(bi.send_gid, bi.channel, cycle,
-                                   static_cast<int>(bi.buf.size()), rows_min);
+                                   static_cast<int>(bi.buf.size()), rows_min, fixed);
         if (row < len) bi.buf(row) = RowValue(bi.send_gid, row, cycle);
       });
 }
@@ -313,6 +334,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
                 Params::Mutability::Mutable);
   pkg->AddParam("rows_min", pin->GetOrAddInteger("provider_lanes", "rows_min", 1));
   pkg->AddParam("rows_vary", pin->GetOrAddBoolean("provider_lanes", "rows_vary", false));
+  pkg->AddParam("rows_fixed",
+                pin->GetOrAddBoolean("provider_lanes", "rows_fixed", false));
   pkg->AddParam("bump_a", -1, Params::Mutability::Mutable);
   pkg->AddParam("bump_b", -1, Params::Mutability::Mutable);
   pkg->AddParam("bump", 0, Params::Mutability::Mutable);
@@ -355,11 +378,12 @@ TaskStatus SetValues(MeshData<Real> *md, int cycle) {
   return TaskStatus::complete;
 }
 
-CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
+CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle, bool groups) {
   CheckResult res;
   const int capacity = GetCapacity(pmesh);
   const auto pkg = pmesh->packages.Get("provider_lanes");
   const int rows_min = pkg->Param<int>("rows_min");
+  const bool fixed = pkg->Param<bool>("rows_fixed");
   auto check = [&res](Real got, Real expected, std::uint64_t tag) {
     std::uint64_t bits;
     std::memcpy(&bits, &got, sizeof(bits));
@@ -389,9 +413,11 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
     }
 
     check(grec(0, 0, 0, 0, 0, 0, 0), RecordValue(gid, cycle), tag);
-    for (int layer = 0; layer < kLayers; ++layer) {
+    for (int layer = 0; layer < (groups ? kLayers : 0); ++layer) {
       const auto &g = graph.members[layer][graph.group[layer][gid]];
       if (g.front() == gid) res.group_sizes[g.size()]++;
+      // A block left alone by LaneGraph::Isolate receives nothing
+      if (g.size() == 1) continue;
       const int ch = LaneGraph::Channel(layer, gid);
       // Sum of the other members' records and mean of all members' candidates, both
       // in ascending gid
@@ -408,7 +434,8 @@ CheckResult Check(Mesh *pmesh, const LaneGraph &graph, int cycle) {
       for (int m : g) {
         if (m == gid) continue;
         const int cap = RowsCapacity(pkg.get(), m, gid);
-        const int len = RowsLength(m, LaneGraph::Channel(layer, m), cycle, cap, rows_min);
+        const int len =
+            RowsLength(m, LaneGraph::Channel(layer, m), cycle, cap, rows_min, fixed);
         for (int row = 0; row < len; ++row)
           row_sum += RowValue(m, row, cycle);
         nrows += len;

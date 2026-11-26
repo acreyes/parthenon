@@ -204,13 +204,16 @@ ParArray1DRaw<BndId> &CoalescedBuffer::GetBndIdsOnDevice(const std::set<Uid_t> &
           (buf_state == BufferState::sending) || (buf_state == BufferState::received);
       const int len = alloc && by_payload ? pvbbuf->GetPayloadSize() : bnd_id.size();
 
-      // Test if this boundary has changed (the channel, ignoring the size, then the size)
+      // Test if this boundary has changed (the channel, ignoring the size, then the
+      // size). The buffer is compared by its storage: pool keys are only unique within
+      // one pool, and a lane rebuild can move a buffer to a pool of another size.
       bool same_channel = true;
       for (int i = 0; i < 8; ++i)
         same_channel = same_channel && bid_h.data[i] == bnd_id.data[i];
       if (!same_channel || bid_h.size() != len || (bid_h.buf_allocated != alloc) ||
           (bid_h.start_idx() != c_buf_idx) ||
-          !UsingSameResource(bid_h.buf, pvbbuf->buffer()) ||
+          bid_h.buf.data() != pvbbuf->buffer().data() ||
+          bid_h.buf.size() != pvbbuf->buffer().size() ||
           bid_h.coalesced_buf.data() != coalesced_comm_buffer.buffer().data()) {
         updated = true;
         bid_h = bnd_id;
@@ -966,7 +969,10 @@ void CoalescedComms::SyncProviderLane(int provider_lane) {
   }
 
   // Receivers: one entry per rank with receive buffers on the lane, each holding the
-  // keys of those buffers; layouts arrive with the next exchange
+  // keys of those buffers; layouts arrive with the next exchange. An entry whose rank
+  // no longer sends on the lane stays (with no keys, and not polled): RebuildLane need
+  // not be called on every rank, so the sender may keep its layout and epoch, which the
+  // entry still holds when the rank sends to this one again.
   auto &base = pmesh->mesh_data.Add("base", pmesh->GetBasePartition());
   for (auto b_type : {BoundaryType::lane, BoundaryType::lane_flxcor_recv}) {
     const int ncl = pmesh->GetNumberOfCommLanes(b_type);
@@ -984,9 +990,12 @@ void CoalescedComms::SyncProviderLane(int provider_lane) {
                                                                  add);
     }
     for (int cl = 0; cl < ncl; ++cl) {
-      auto it = EntriesBegin(coalesced_recv_buffers, b_type, cl, provider_lane);
-      while (InEntries(it, coalesced_recv_buffers.end(), b_type, cl, provider_lane))
-        it = expected.count(it->first) ? std::next(it) : coalesced_recv_buffers.erase(it);
+      for (auto it = EntriesBegin(coalesced_recv_buffers, b_type, cl, provider_lane);
+           InEntries(it, coalesced_recv_buffers.end(), b_type, cl, provider_lane); ++it) {
+        if (expected.count(it->first)) continue;
+        it->second.expected_keys.clear();
+        it->second.CheckLaneLayout();
+      }
     }
     for (auto &[key, keys] : expected) {
       auto it = coalesced_recv_buffers.find(key);
@@ -1216,7 +1225,8 @@ bool CoalescedComms::TryReceiveAny(MeshData<Real> *pmd, BoundaryType b_type,
        InEntries(it, coalesced_recv_buffers.end(), b_type, lane, provider_lane); ++it) {
     auto &coal_bufs = it->second;
     if (coal_bufs.OnProviderLane()) {
-      all_received = coal_bufs.TryReceiveLane() && all_received;
+      if (!coal_bufs.expected_keys.empty())
+        all_received = coal_bufs.TryReceiveLane() && all_received;
       continue;
     }
     for (auto &[partition_tag, coal_buf] : coal_bufs.coalesced_bufs) {

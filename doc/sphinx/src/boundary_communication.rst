@@ -713,14 +713,19 @@ ids must be below ``kMaxCoalescedProviderLanes``. Differences from the geometric
   by a per-rank-pair epoch, only to the ranks whose layout changed. The receiver does not wait
   in ``RebuildLane``: its next receive on the lane reads the epoch from the status message and
   applies the matching lane info (receiving it then if it has not arrived). Several rebuilds
-  before one exchange are fine; superseded infos are skipped. A layout that does not match the
-  receiver's own buffers (an asymmetric lane graph, or ``RebuildLane`` missing on one rank) is
-  a hard error.
+  before one exchange are fine; superseded infos are skipped. A rank whose part of the lane did
+  not change may skip ``RebuildLane``, or sit out exchanges of the lane, while others rebuild:
+  the receiver keeps the last layout and epoch it applied from every rank, also while that rank
+  sends it nothing, so a sender that kept its layout needs no new info. A layout that does not
+  match the receiver's own buffers (an asymmetric lane graph, or ``RebuildLane`` missing on a
+  rank whose buffers changed) is a hard error.
 - **Tags of individual lane buffers are unused**, so an incremental ``RebuildLane`` does not
   rebuild the buffers of every channel to a rank whose lane tags changed.
 
 The ``provider_lanes`` regression test runs the example with coalescing off and on at 1 to 4
-ranks and requires bitwise identical results, and counts the lane info messages.
+ranks and requires bitwise identical results, and counts the lane info messages. It also
+covers buffers that a rebuild moves to a buffer pool of another size with the same payload, and
+a rank that skips ``RebuildLane`` and an exchange while the others rebuild.
 
 .. note::
     This file was made in part with generative AI. 

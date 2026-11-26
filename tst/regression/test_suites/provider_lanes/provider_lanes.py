@@ -31,6 +31,19 @@ SET_B = [
     "provider_lanes/rebuilds=2",
     "provider_lanes/ncycles=5",
 ]
+SET_C = [
+    "provider_lanes/pair_change=true",
+    "provider_lanes/rebuild_cycle=-1",
+    "provider_lanes/rows_fixed=true",
+    "provider_lanes/rows_min=3",
+    "provider_lanes/ncycles=6",
+]
+SET_D = [
+    "provider_lanes/idle_rank=1",
+    "provider_lanes/rebuild_cycle=-1",
+    "provider_lanes/ncycles=4",
+]
+SETS = {"A": SET_A, "B": SET_B, "C": SET_C, "D": SET_D}
 # (set, ranks (0 for the test's number), coalesced comms, extra arguments)
 RUNS = [
     ("A", 2, False, []),
@@ -42,6 +55,11 @@ RUNS = [
     ("B", 3, False, []),
     ("B", 3, True, []),
     ("B", 2, True, []),
+    ("C", 2, False, []),
+    ("C", 2, True, []),
+    ("C", 0, True, []),
+    ("D", 3, False, []),
+    ("D", 3, True, []),
 ]
 
 
@@ -53,7 +71,11 @@ class TestCase(utils.test_case.TestCaseAbs):
     coalesced comms off and on. Set A also changes the rows capacity of one pair of
     blocks on two ranks, so with coalesced comms exactly that pair's two lane infos are
     sent; set B has empty payloads, per-pair capacities and two rebuilds before one
-    exchange. Each run checks its exchanged values, its boundary cache initializations
+    exchange. Set C grows that pair's capacity three times with the same payload, so
+    its buffers move to new pools, whose keys repeat the old pool's. In set D rank 1
+    sits out one exchange of the groups lane without rebuilding it while the others
+    drop it and rebuild, then they take it back and rebuild while rank 1 still does
+    not. Each run checks its exchanged values, its boundary cache initializations
     and, with coalesced comms, its lane info messages itself; the test then requires the
     per-cycle hashes of all runs of a set to be identical.
     """
@@ -67,7 +89,7 @@ class TestCase(utils.test_case.TestCaseAbs):
             parameters.num_ranks = ranks if ranks > 0 else self.max_ranks
         parameters.driver_cmd_line_args = (
             ["parthenon/job/problem_id=provider_lanes_%d" % step]
-            + (SET_A if lane_set == "A" else SET_B)
+            + SETS[lane_set]
             + [
                 "parthenon/mesh/do_coalesced_comms=%s"
                 % ("true" if coalesced else "false")
@@ -77,7 +99,7 @@ class TestCase(utils.test_case.TestCaseAbs):
         return parameters
 
     def Analyse(self, parameters):
-        hashes = {"A": set(), "B": set()}
+        hashes = {k: set() for k in SETS}
         for (lane_set, ranks, coalesced, extra), stdout in zip(
             RUNS, parameters.stdouts
         ):
